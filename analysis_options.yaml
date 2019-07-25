@@ -1,4 +1,10 @@
+# This is a copy of ../analysis_options.yaml, with implicit-casts: false, and an "exclude: ...".
+
 analyzer:
+  strong-mode:
+    implicit-casts: false
+  exclude:
+    - "tools/analyzer_plugin/bin/plugin.dart"
   errors:
     unused_element: error
     unused_import: error
@@ -8,16 +14,8 @@ analyzer:
     # Allow importing .template.dart files without an analyzer error.
     uri_has_not_been_generated: ignore
 
-    # Ignore our own deprecated symbols.
+    # The noise of deprecations isn't worth the effort.
     deprecated_member_use_from_same_package: ignore
-  exclude:
-    - .dart_tool/**
-    - build/**
-    # TODO(https://github.com/dart-lang/angular/issues/1508)
-    - examples/hacker_news_pwa/test/**
-  plugins:
-    - angular
-
 linter:
   rules:
     - avoid_empty_else
