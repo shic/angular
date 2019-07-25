@@ -156,7 +156,7 @@ class ProviderResolver {
         _instances.add(
             token,
             _host.createProviderInstance(resolvedProvider, directiveMetadata,
-                providerSources, _instances.length));
+                providerSources, _instances.size));
       }
     }
   }
@@ -309,9 +309,7 @@ class FactoryProviderSource extends ProviderSource {
   @override
   o.Expression build() {
     List<o.Expression> paramExpressions = [];
-    for (ProviderSource s in _parameters) {
-      paramExpressions.add(s.build());
-    }
+    for (ProviderSource s in _parameters) paramExpressions.add(s.build());
     final create = o.importExpr(_factory).callFn(paramExpressions);
     if (hasDynamicDependencies) {
       return debugInjectorWrap(createDiTokenExpression(token), create);
@@ -339,9 +337,7 @@ class ClassProviderSource extends ProviderSource {
   @override
   o.Expression build() {
     List<o.Expression> paramExpressions = [];
-    for (ProviderSource s in _parameters) {
-      paramExpressions.add(s.build());
-    }
+    for (ProviderSource s in _parameters) paramExpressions.add(s.build());
     final clazz = o.importExpr(_classType);
     final create = clazz.instantiate(
       paramExpressions,
@@ -369,9 +365,7 @@ class FunctionalDirectiveSource extends ProviderSource {
   @override
   o.Expression build() {
     List<o.Expression> paramExpressions = [];
-    for (ProviderSource s in _parameters) {
-      paramExpressions.add(s.build());
-    }
+    for (ProviderSource s in _parameters) paramExpressions.add(s.build());
     return o.importExpr(_classType).callFn(paramExpressions);
   }
 

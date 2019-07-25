@@ -27,12 +27,12 @@ import 'package:csslib/visitor.dart';
 ///
 /// * Shadow Piercing Combinators
 ///
-///   The ::ng-deep combinator allows a selector to pierce shadow boundaries and
+///   The >>> combinator allows a selector to pierce shadow boundaries and
 ///   target nodes within a child host's shadow tree. To shim this feature, the
 ///   combinator is replaced by the descendant combinator, and the following
 ///   selectors aren't scoped with the host specific content class.
 ///
-///     .x ::ng-deep .y  =>  .x.content .y
+///     .x >>> .y  =>  .x.content .y
 ///
 /// * Polyfill Selectors - DO NOT USE, SUPPORTED FOR LEGACY ONLY
 ///
@@ -76,12 +76,24 @@ import 'package:csslib/visitor.dart';
 ///     font-size: 12px;
 ///   }
 ///   ```
-String shimShadowCss(
-  String css,
-  String contentClass,
-  String hostClass, {
-  bool useLegacyEncapsulation = false,
-}) {
+String shimShadowCss(String css, String contentClass, String hostClass,
+    {bool useLegacyEncapsulation = false}) {
+  // Hack to replace all sequential >>> (and alias /deep/) combinators with a
+  // single >>> combinator. These sequences occur commonly in CSS generated from
+  // SASS like the example shown:
+  //
+  // SASS:
+  //  @mixin a() {
+  //    /deep/ .x {
+  //      color: red;
+  //    }
+  //  }
+  //
+  //  .y /deep/ {
+  //    @include a();
+  //  }
+  css = css.replaceAll(_consecutiveShadowPiercingCombinatorsRe, '>>> ');
+
   var errors = <Message>[];
   var styleSheet = parse(css, errors: errors);
 
@@ -97,6 +109,10 @@ String shimShadowCss(
   printer.visitTree(styleSheet);
   return printer.toString();
 }
+
+// Matches two or more consecutive '>>>' and '/deep/' combinators.
+final RegExp _consecutiveShadowPiercingCombinatorsRe =
+    RegExp(r'(?:(?:/deep/|>>>)\s*){2,}');
 
 /// Returns the declaration for property [name] in [group].
 ///
@@ -475,13 +491,22 @@ class _ShadowTransformer extends Visitor {
 
       // Shim '::ng-deep'
       if (compoundSelector.removeIfNgDeep()) indices.deepIndex = i;
+
+      // Shim deprecated '>>>' and '/deep/'.
+      if (compoundSelector.combinator == TokenKind.COMBINATOR_DEEP ||
+          compoundSelector.combinator ==
+              TokenKind.COMBINATOR_SHADOW_PIERCING_DESCENDANT) {
+        // Replace shadow piercing combinator with descendant combinator.
+        compoundSelector.combinator = TokenKind.COMBINATOR_DESCENDANT;
+        indices.deepIndex = i;
+      }
     }
   }
 
   /// Shims Shadow DOM CSS features to emulate style encapsulation.
   ///
   /// Example:
-  ///   :host(.x) > .y ::ng-deep .z  =>  .x.host > .y.content .z
+  ///   :host(.x) > .y >>> .z  =>  .x.host > .y.content .z
   void shimSelectors(_ComplexSelector selector) {
     var indices = _Indices(selector.compoundSelectors.length, -1);
     shimDeepCombinators(selector, indices);
@@ -606,6 +631,12 @@ class _LegacyShadowTransformer extends _ShadowTransformer {
         indices.deepIndex = i;
         indices.hostIndex = i;
       } else if (compoundSelector.removeIfNgDeep()) {
+        indices.deepIndex = i;
+      }
+      if (compoundSelector.combinator == TokenKind.COMBINATOR_DEEP ||
+          compoundSelector.combinator ==
+              TokenKind.COMBINATOR_SHADOW_PIERCING_DESCENDANT) {
+        compoundSelector.combinator = TokenKind.COMBINATOR_DESCENDANT;
         indices.deepIndex = i;
       }
     }

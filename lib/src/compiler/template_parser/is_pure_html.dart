@@ -18,9 +18,6 @@ class IsPureHtmlVisitor extends TemplateAstVisitor<bool, Null> {
   bool visitDirectiveProperty(BoundDirectivePropertyAst ast, _) => false;
 
   @override
-  bool visitDirectiveEvent(BoundDirectiveEventAst ast, _) => false;
-
-  @override
   bool visitElement(ElementAst ast, _) {
     var isComponent = ast.directives.any((d) => d.directive.isComponent);
 

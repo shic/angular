@@ -2,19 +2,12 @@ import 'package:meta/meta.dart';
 import 'package:angular/src/compiler/analyzed_class.dart';
 import 'package:angular/src/compiler/compile_metadata.dart'
     show CompileDirectiveMetadata;
-import 'package:angular/src/compiler/expression_parser/ast.dart';
 import 'package:angular/src/compiler/expression_parser/parser.dart' show Parser;
-import 'package:angular/src/compiler/identifiers.dart';
+import 'package:angular/src/compiler/html_events.dart';
+import 'package:angular/src/compiler/identifiers.dart' show Identifiers;
 import 'package:angular/src/compiler/ir/model.dart' as ir;
 import 'package:angular/src/compiler/output/output_ast.dart' as o;
-import 'package:angular/src/compiler/semantic_analysis/binding_converter.dart'
-    show
-        convertHostAttributeToBinding,
-        convertHostListenerToBinding,
-        convertToBinding;
 import 'package:angular/src/compiler/template_ast.dart';
-import 'package:angular/src/compiler/view_compiler/bound_value_converter.dart';
-import 'package:angular/src/compiler/view_compiler/update_statement_visitor.dart';
 import 'package:angular/src/core/change_detection/change_detection.dart'
     show ChangeDetectionStrategy;
 import 'package:angular/src/core/linker/view_type.dart';
@@ -24,14 +17,22 @@ import 'compile_element.dart' show CompileElement, CompileNode;
 import 'compile_view.dart';
 import 'constants.dart'
     show
+        appViewRootElementName,
+        createEnumExpression,
         changeDetectionStrategyToConst,
         parentRenderNodeVar,
         DetectChangesVars,
-        ViewConstructorVars;
+        EventHandlerVars,
+        ViewConstructorVars,
+        ViewProperties;
+import 'event_binder.dart' show convertStmtIntoExpression;
+import 'expression_converter.dart';
+import 'parse_utils.dart';
 import 'perf_profiler.dart';
 import 'provider_forest.dart' show ProviderForest, ProviderNode;
 import 'view_compiler_utils.dart'
     show
+        attributeName,
         createFlatArray,
         detectHtmlElementFromTagName,
         identifierFromTagName,
@@ -93,10 +94,12 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
       return;
     }
     _visitText(
-      convertToBinding(ast, _view.component.analyzedClass),
-      parent,
-      ast.ngContentIndex,
-    );
+        ir.Binding(
+            source: ir.BoundExpression(
+                ast.value, ast.sourceSpan, _view.component.analyzedClass),
+            target: ir.TextBinding()),
+        parent,
+        ast.ngContentIndex);
   }
 
   @override
@@ -107,15 +110,25 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
       }
       return;
     }
-    _visitText(convertToBinding(ast, null), parent, ast.ngContentIndex);
+    _visitText(
+        ir.Binding(
+            source: ir.StringLiteral(ast.value), target: ir.TextBinding()),
+        parent,
+        ast.ngContentIndex);
   }
 
   @override
   void visitI18nText(I18nTextAst ast, CompileElement parent) {
-    _visitText(convertToBinding(ast, null), parent, ast.ngContentIndex);
+    _visitText(
+        ir.Binding(
+            source: ir.BoundI18nMessage(ast.value),
+            target:
+                ast.value.containsHtml ? ir.HtmlBinding() : ir.TextBinding()),
+        parent,
+        ast.ngContentIndex);
   }
 
-  bool _maybeSkipNode(CompileElement parent, int ngContentIndex) {
+  bool _maybeSkipNode(CompileElement parent, ngContentIndex) {
     if (!_isRootNode(parent) &&
         parent.component != null &&
         ngContentIndex == null) {
@@ -145,6 +158,7 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
 
   NodeReference _nodeReference(
       ir.Binding binding, CompileElement parent, int nodeIndex) {
+    int nodeIndex = _view.nodes.length;
     if (binding.target is ir.TextBinding) {
       return _view.createTextBinding(binding.source, parent, nodeIndex);
     } else if (binding.target is ir.HtmlBinding) {
@@ -162,7 +176,7 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
 
   @override
   void visitNgContent(NgContentAst ast, CompileElement parent) {
-    _view.projectNodesIntoElement(parent, ast.index, ast.ngContentIndex);
+    _view.projectNodesIntoElement(parent, ast.index, ast);
   }
 
   @override
@@ -185,11 +199,12 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
   }
 
   NodeReference _elementReference(ElementAst ast, int nodeIndex) {
-    return NodeReference(
-      _view.storage,
-      o.importType(identifierFromTagName(ast.name)),
-      nodeIndex,
-    );
+    final type = o.importType(identifierFromTagName(ast.name));
+    if (_view.isRootNodeOfHost(nodeIndex)) {
+      return NodeReference.appViewRoot();
+    } else {
+      return NodeReference(_view.storage, type, nodeIndex);
+    }
   }
 
   CompileDirectiveMetadata _componentFromDirectives(
@@ -226,15 +241,13 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
       List<CompileDirectiveMetadata> directives,
       ElementAst ast,
       {bool isDeferred = false}) {
-    final componentViewExpr = _view.createComponentNodeAndAppend(
+    AppViewReference compAppViewRef = _view.createComponentNodeAndAppend(
         component, parent, elementRef, nodeIndex, ast,
         isDeferred: isDeferred);
 
     var isHtmlElement = detectHtmlElementFromTagName(ast.name);
 
-    final isHostView = _view.viewType == ViewType.host;
-
-    if (!isHostView) {
+    if (_view.viewType != ViewType.host) {
       var mergedBindings = mergeHtmlAndDirectiveAttributes(
         ast,
         directives,
@@ -249,6 +262,7 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
 
     _view.shimCssForNode(elementRef, nodeIndex, Identifiers.HTML_HTML_ELEMENT);
 
+    final compAppViewExpr = compAppViewRef.toReadExpr();
     final compileElement = CompileElement(
       parent,
       _view,
@@ -261,13 +275,13 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
       ast.hasViewContainer,
       false,
       ast.references,
-      componentView: componentViewExpr,
+      componentView: compAppViewExpr,
       hasTemplateRefQuery: parent.hasTemplateRefQuery,
       isHtmlElement: isHtmlElement,
       isDeferredComponent: isDeferred,
     );
 
-    _view.addViewChild(compileElement);
+    _view.addViewChild(compAppViewExpr);
     _view.nodes.add(compileElement);
     _addRootNodeAndProject(compileElement, ast.ngContentIndex, parent);
 
@@ -278,21 +292,16 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
     _visitingProjectedContent = oldVisitingProjectedContent;
     _afterChildren(compileElement);
 
-    // Only component and embedded views need to generate code to create child
-    // component views. Host views always have exactly one child component view,
-    // which is created by hand-written code in `HostView.create()`.
-    if (!isHostView) {
-      final componentInstance = compileElement.getComponent();
-      final projectedNodes = o.literalArr(compileElement
-          .contentNodesByNgContentIndex
-          .map(createFlatArray)
+    o.Expression projectables;
+    if (_view.component.type.isHost) {
+      projectables = ViewProperties.projectedNodes;
+    } else {
+      projectables = o.literalArr(compileElement.contentNodesByNgContentIndex
+          .map((nodes) => createFlatArray(nodes))
           .toList());
-      _view.createComponentView(
-        componentViewExpr,
-        componentInstance,
-        projectedNodes,
-      );
     }
+    var componentInstance = compileElement.getComponent();
+    _view.createAppView(compAppViewRef, componentInstance, projectables);
   }
 
   void _visitHtmlElement(
@@ -439,9 +448,6 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
       BoundDirectivePropertyAst ast, CompileElement parent) {}
 
   @override
-  void visitDirectiveEvent(BoundDirectiveEventAst ast, CompileElement parent) {}
-
-  @override
   void visitElementProperty(
       BoundElementPropertyAst ast, CompileElement parent) {}
 
@@ -453,28 +459,29 @@ class ViewBuilderVisitor implements TemplateAstVisitor<void, CompileElement> {
   }
 }
 
-/// Generates a class AST for a [view].
-o.ClassStmt createViewClass(CompileView view, Parser parser) {
-  final viewConstructor = _createViewConstructor(view);
-  final viewMethods = [
+/// Generates output ast for a CompileView and returns a [ClassStmt] for the
+/// view of embedded template.
+o.ClassStmt createViewClass(
+  CompileView view,
+  Parser parser,
+) {
+  final viewConstructor = _createViewClassConstructor(view);
+  final viewMethods = <o.ClassMethod>[
     o.ClassMethod(
-      'build',
+      "build",
       [],
       _generateBuildMethod(view, parser),
-      null,
+      o.importType(Identifiers.ComponentRef,
+          // The 'HOST' view is the only implementation that actually returns
+          // a ComponentRef, the rest statically declare they do but in
+          // reality return `null`. There is no way to fix this without
+          // creating new sub-class-able AppView types:
+          // https://github.com/dart-lang/angular/issues/1421
+          [_getContextType(view)]),
       null,
       [o.importExpr(Identifiers.dartCoreOverride)],
     ),
     view.writeInjectorGetMethod(),
-    if (view.component.isChangeDetectionLink)
-      o.ClassMethod(
-        'detectChangesInCheckAlwaysViews',
-        [],
-        view.writeCheckAlwaysChangeDetectionStatements(),
-        null,
-        null,
-        [o.importExpr(Identifiers.dartCoreOverride)],
-      ),
     o.ClassMethod(
       "detectChangesInternal",
       [],
@@ -483,15 +490,14 @@ o.ClassStmt createViewClass(CompileView view, Parser parser) {
       null,
       [o.importExpr(Identifiers.dartCoreOverride)],
     ),
-    if (view.viewType == ViewType.embedded)
-      o.ClassMethod(
-        "dirtyParentQueriesInternal",
-        [],
-        view.dirtyParentQueriesMethod.finish(),
-        null,
-        null,
-        [o.importExpr(Identifiers.dartCoreOverride)],
-      ),
+    o.ClassMethod(
+      "dirtyParentQueriesInternal",
+      [],
+      view.dirtyParentQueriesMethod.finish(),
+      null,
+      null,
+      [o.importExpr(Identifiers.dartCoreOverride)],
+    ),
     o.ClassMethod(
       "destroyInternal",
       [],
@@ -499,22 +505,17 @@ o.ClassStmt createViewClass(CompileView view, Parser parser) {
       null,
       null,
       [o.importExpr(Identifiers.dartCoreOverride)],
-    ),
-    ...view.methods,
-  ];
-  if (view.viewType == ViewType.component &&
-      view.detectHostChangesMethod != null) {
+    )
+  ]..addAll(view.methods);
+  if (view.detectHostChangesMethod != null) {
     final methodStatements = view.detectHostChangesMethod.finish();
-    viewMethods.add(
-      o.ClassMethod(
+    viewMethods.add(o.ClassMethod(
         'detectHostChanges',
         [o.FnParam(DetectChangesVars.firstCheck.name, o.BOOL_TYPE)],
-        [
-          ...maybeCachedCtxDeclarationStatement(statements: methodStatements),
-          ...methodStatements,
-        ],
-      ),
-    );
+        []
+          ..addAll(
+              maybeCachedCtxDeclarationStatement(statements: methodStatements))
+          ..addAll(methodStatements)));
   }
   for (final method in viewMethods) {
     if (method.body != null) {
@@ -528,7 +529,7 @@ o.ClassStmt createViewClass(CompileView view, Parser parser) {
   }
   final viewClass = o.ClassStmt(
     view.className,
-    _createParentClassExpr(view),
+    o.importExpr(Identifiers.AppView, typeParams: [_getContextType(view)]),
     view.storage.fields,
     view.getters,
     viewConstructor,
@@ -541,116 +542,57 @@ o.ClassStmt createViewClass(CompileView view, Parser parser) {
   return viewClass;
 }
 
-/// Generates a constructor AST for [view].
-o.Constructor _createViewConstructor(CompileView view) {
-  switch (view.viewType) {
-    case ViewType.component:
-      return _createComponentViewConstructor(view);
-    case ViewType.embedded:
-      return _createEmbeddedViewConstructor(view);
-    case ViewType.host:
-      return _createHostViewConstructor(view);
-    default:
-      throw StateError('Unsupported $ViewType: ${view.viewType}');
-  }
-}
-
-o.Constructor _createComponentViewConstructor(CompileView view) {
-  final tagName = _tagNameFromComponentSelector(view.component.selector);
-  if (tagName.isEmpty) {
-    throwFailure('Component selector is missing tag name in '
-        '${view.component.identifier.name} '
-        'selector:${view.component.selector}');
-  }
-  final rootElementRef = NodeReference.rootElement();
-  final createRootElementExpr = o
-      .importExpr(Identifiers.HTML_DOCUMENT)
-      .callMethod('createElement', [o.literal(tagName)]);
-  final body = [
-    rootElementRef.toWriteStmt(createRootElementExpr),
+o.Constructor _createViewClassConstructor(CompileView view) {
+  var viewConstructorArgs = [
+    o.FnParam(ViewConstructorVars.parentView.name,
+        o.importType(Identifiers.AppView, [o.DYNAMIC_TYPE])),
+    o.FnParam(ViewConstructorVars.parentIndex.name, o.INT_TYPE)
   ];
-  // Write literal attribute values on element.
-  view.component.hostAttributes.forEach((name, value) {
-    var binding = convertHostAttributeToBinding(
-        name, ASTWithSource.missingSource(value), view.component.analyzedClass);
-    var statement = view.createAttributeStatement(
-      binding,
-      tagName,
-      rootElementRef,
-      isHtmlElement: detectHtmlElementFromTagName(tagName),
-    );
-    body.add(statement);
-  });
-  if (view.genConfig.profileFor != Profile.none) {
-    genProfileSetup(body);
+  var superConstructorArgs = [
+    createEnumExpression(Identifiers.ViewType, view.viewType),
+    ViewConstructorVars.parentView,
+    ViewConstructorVars.parentIndex,
+    changeDetectionStrategyToConst(_getChangeDetectionMode(view))
+  ];
+  final ctor = o.Constructor(
+    params: viewConstructorArgs,
+    initializers: [o.SUPER_EXPR.callFn(superConstructorArgs).toStmt()],
+  );
+  if (view.viewType == ViewType.component && view.viewIndex == 0) {
+    // No namespace just call [document.createElement].
+    String tagName = _tagNameFromComponentSelector(view.component.selector);
+    if (tagName.isEmpty) {
+      throwFailure('Component selector is missing tag name in '
+          '${view.component.identifier.name} '
+          'selector:${view.component.selector}');
+    }
+    var createRootElementExpr = o
+        .importExpr(Identifiers.HTML_DOCUMENT)
+        .callMethod('createElement', [o.literal(tagName)]);
+
+    var appView = NodeReference.appViewRoot();
+
+    ctor.body.add(appView.toWriteStmt(createRootElementExpr));
+
+    // Write literal attribute values on element.
+    CompileDirectiveMetadata componentMeta = view.component;
+    componentMeta.hostAttributes.forEach((name, value) {
+      var binding = ir.Binding(
+          source: ir.BoundExpression(value, null, view.component.analyzedClass),
+          target: attributeName(name));
+      var statement = view.createAttributeStatement(
+        binding,
+        tagName,
+        appView,
+        isHtmlElement: detectHtmlElementFromTagName(tagName),
+      );
+      ctor.body.add(statement);
+    });
+    if (view.genConfig.profileFor != Profile.none) {
+      genProfileSetup(ctor.body);
+    }
   }
-  return o.Constructor(
-    params: [
-      o.FnParam(
-        ViewConstructorVars.parentView.name,
-        o.importType(Views.view),
-      ),
-      o.FnParam(
-        ViewConstructorVars.parentIndex.name,
-        o.INT_TYPE,
-      ),
-    ],
-    initializers: [
-      o.SUPER_EXPR.callFn([
-        ViewConstructorVars.parentView,
-        ViewConstructorVars.parentIndex,
-        changeDetectionStrategyToConst(_getChangeDetectionMode(view)),
-      ]).toStmt()
-    ],
-    body: body,
-  );
-}
-
-o.Constructor _createEmbeddedViewConstructor(CompileView view) {
-  return o.Constructor(
-    params: [
-      o.FnParam(
-        ViewConstructorVars.parentView.name,
-        o.importType(Views.renderView),
-      ),
-      o.FnParam(
-        ViewConstructorVars.parentIndex.name,
-        o.INT_TYPE,
-      ),
-    ],
-    initializers: [
-      o.SUPER_EXPR.callFn([
-        ViewConstructorVars.parentView,
-        ViewConstructorVars.parentIndex,
-      ]).toStmt(),
-    ],
-  );
-}
-
-o.Constructor _createHostViewConstructor(CompileView view) {
-  return o.Constructor(
-    params: [
-      o.FnParam('injector', o.importType(Identifiers.Injector)),
-    ],
-    initializers: [
-      o.SUPER_EXPR.callFn([o.variable('injector')]).toStmt(),
-    ],
-  );
-}
-
-/// Creates the superclass that [view] derives.
-o.Expression _createParentClassExpr(CompileView view) {
-  final typeArgs = [_getContextType(view)];
-  switch (view.viewType) {
-    case ViewType.component:
-      return o.importExpr(Views.componentView, typeParams: typeArgs);
-    case ViewType.embedded:
-      return o.importExpr(Views.embeddedView, typeParams: typeArgs);
-    case ViewType.host:
-      return o.importExpr(Views.hostView, typeParams: typeArgs);
-    default:
-      throw StateError('Unsupported $ViewType: ${view.viewType}');
-  }
+  return ctor;
 }
 
 String _tagNameFromComponentSelector(String selector) {
@@ -666,61 +608,55 @@ String _tagNameFromComponentSelector(String selector) {
 }
 
 List<o.Statement> _generateDestroyMethod(CompileView view) {
-  // Host views have a default implementation of `destroyInternal()` that
-  // destroys their only child component view. Overriding this implementation is
-  // only necessary if the host view also hosts a view container or the child
-  // component implements `OnDestroy` (in which case `view.destroyMethod` will
-  // contain a statement to invoke the life cycle method).
-  if (view.viewType == ViewType.host &&
-      view.viewContainers.isEmpty &&
-      view.destroyMethod.isEmpty) {
-    return [];
+  var statements = <o.Statement>[];
+  for (o.Expression child in view.viewContainers) {
+    statements.add(child.callMethod('destroyNestedViews', []).toStmt());
   }
-  return [
-    for (var viewContainer in view.viewContainers)
-      viewContainer.callMethod('destroyNestedViews', []).toStmt(),
-    for (var viewChild in view.viewChildren)
-      viewChild.componentView.callMethod('destroyInternalState', []).toStmt(),
-    ...view.destroyMethod.finish(),
-  ];
+  for (o.Expression child in view.viewChildren) {
+    statements.add(child.callMethod('destroyInternalState', []).toStmt());
+  }
+  statements.addAll(view.destroyMethod.finish());
+  return statements;
 }
 
 /// Creates a factory function that instantiates a view.
 ///
 /// ```
-/// AppView<SomeComponent> viewFactory_SomeComponentHost0() {
-///   return ViewSomeComponentHost0();
+/// AppView<SomeComponent> viewFactory_SomeComponentHost0(
+///   AppView<dynamic> parentView,
+///   int parentIndex,
+/// ) {
+///   return ViewSomeComponentHost0(parentView, parentIndex);
 /// }
 /// ```
 o.Statement createViewFactory(CompileView view, o.ClassStmt viewClass) {
-  switch (view.viewType) {
-    case ViewType.embedded:
-      return _createEmbeddedViewFactory(view, viewClass);
-    case ViewType.host:
-      return _createHostViewFactory(view, viewClass);
-    default:
-      throw StateError(
-          'Can\'t create factory for view type "${view.viewType}"');
-  }
-}
-
-o.Statement _createEmbeddedViewFactory(
-    CompileView view, o.ClassStmt viewClass) {
-  final parentViewType = o.importType(Views.renderView);
+  final parentViewType = o.importType(Identifiers.AppView, [o.DYNAMIC_TYPE]);
   final parameters = [
     o.FnParam(ViewConstructorVars.parentView.name, parentViewType),
     o.FnParam(ViewConstructorVars.parentIndex.name, o.INT_TYPE),
   ];
-  // Unlike host view factories, the return type of an embedded view factory
-  // doesn't need to include its component type. This is because we only need
-  // access to the API of `EmbeddedView` itself to insert and remove embedded
-  // views into view containers. Note that for generic embedded views, we can no
-  // longer infer the generic type arguments of the constructor from the return
-  // type, and must specify it within the function body.
+  // For component and host view factories, the returned `AppView` must include
+  // the component type as a type argument:
   //
-  //    EmbeddedView<void> viewFactory_FooComponent1<T>(...) {
-  //      return ViewComponent1<T>(...);
-  //    }
+  //     AppView<FooComponent> viewFactory_FooComponent0(...) { ... }
+  //
+  // This includes any generic type parameters the component itself might have.
+  // Note how the generic type arguments of the constructor are inferred from
+  // the return type.
+  //
+  //   AppView<BarComponent<T>> viewFactory_FooComponent0<T>(...) {
+  //     return ViewFooComponent0(...);
+  //   }
+  //
+  // In contrast, the return type of an embedded view factory doesn't need to
+  // include its component type. This is because we only need access to the API
+  // of `AppView` itself to insert and remove embedded views into view
+  // containers. Note that for generic embedded views, we can no longer infer
+  // the generic type arguments of the constructor from the return type.
+  //
+  //   AppView<void> viewFactory_FooComponent1<T>(...) {
+  //     return ViewComponent1<T>(...);
+  //   }
   //
   // We intentionally make this distinction as an optimization. Any time we take
   // a method tear-off (which we do every time an embedded view is used),
@@ -732,14 +668,21 @@ o.Statement _createEmbeddedViewFactory(
   // return type of all embedded view factories, we allow all of them to share
   // the same type signature, instead of each one being unique, thus reducing
   // code size.
-  final returnType = o.importType(Views.embeddedView, [o.VOID_TYPE]);
-  final constructorTypeArguments =
-      viewClass.typeParameters.map((t) => t.toType()).toList();
+  List<o.OutputType> constructorTypeArguments;
+  List<o.OutputType> returnTypeTypeArguments;
+  if (view.viewType == ViewType.embedded) {
+    constructorTypeArguments =
+        viewClass.typeParameters.map((t) => t.toType()).toList();
+    returnTypeTypeArguments = [o.VOID_TYPE];
+  } else {
+    returnTypeTypeArguments = [_getContextType(view)];
+  }
   final body = [
     o.ReturnStatement(o.variable(viewClass.name).instantiate(
         parameters.map((p) => o.variable(p.name)).toList(),
         genericTypes: constructorTypeArguments)),
   ];
+  final returnType = o.importType(Identifiers.AppView, returnTypeTypeArguments);
   return o.DeclareFunctionStmt(
     view.viewFactoryName,
     parameters,
@@ -749,47 +692,21 @@ o.Statement _createEmbeddedViewFactory(
   );
 }
 
-o.Statement _createHostViewFactory(CompileView view, o.ClassStmt viewClass) {
-  // For host view factories, the returned `HostView` must include the component
-  // type as a type argument:
-  //
-  //    HostView<FooComponent> viewFactory_FooComponentHost0(...) { ... }
-  //
-  // This includes any generic type parameters the component itself might have.
-  // Note how the generic type arguments of the constructor are inferred from
-  // the return type.
-  //
-  //    HostView<BarComponent<T>> viewFactory_BarComponentHost0<T>(...) {
-  //      return _ViewBarComponentHost0(...);
-  //    }
-  final returnTypeTypeArguments = [_getContextType(view)];
-  final returnType = o.importType(Views.hostView, returnTypeTypeArguments);
-  final injectorParameterName = 'injector';
-  final body = [
-    o.ReturnStatement(
-      o.variable(viewClass.name).instantiate([
-        o.variable(injectorParameterName),
-      ]),
-    ),
-  ];
-  return o.DeclareFunctionStmt(
-    view.viewFactoryName,
-    [
-      o.FnParam(injectorParameterName, o.importType(Identifiers.Injector))
-    ], // No parameters.
-    body,
-    type: returnType,
-    typeParameters: viewClass.typeParameters,
-  );
-}
-
 List<o.Statement> _generateBuildMethod(CompileView view, Parser parser) {
+  // Hoist the `rootEl` class field as `_rootEl` locally for Dart2JS.
+  o.ReadVarExpr cachedRootEl;
   final parentRenderNodeStmts = <o.Statement>[];
   final isComponent = view.viewType == ViewType.component;
   if (isComponent) {
+    cachedRootEl = o.variable('_rootEl');
+    parentRenderNodeStmts.add(cachedRootEl
+        .set(o.ReadClassMemberExpr(appViewRootElementName))
+        .toDeclStmt(null, [o.StmtModifier.Final]));
     final nodeType = o.importType(Identifiers.HTML_HTML_ELEMENT);
-    final parentRenderNodeExpr =
-        o.InvokeMemberMethodExpr('initViewRoot', const []);
+    final parentRenderNodeExpr = o.InvokeMemberMethodExpr(
+      "initViewRoot",
+      [cachedRootEl],
+    );
     parentRenderNodeStmts.add(parentRenderNodeVar
         .set(parentRenderNodeExpr)
         .toDeclStmt(nodeType, [o.StmtModifier.Final]));
@@ -797,34 +714,74 @@ List<o.Statement> _generateBuildMethod(CompileView view, Parser parser) {
 
   var statements = <o.Statement>[];
   var profileStartStatements = <o.Statement>[];
+  var declStatements = <o.Statement>[];
   if (view.genConfig.profileFor == Profile.build) {
     genProfileBuildStart(view, profileStartStatements);
   }
 
+  bool isComponentRoot = isComponent && view.viewIndex == 0;
+
   statements.addAll(parentRenderNodeStmts);
   view.writeBuildStatements(statements);
 
-  final initStatement = _generateInitStatement(view);
-  if (initStatement != null) {
-    statements.add(initStatement);
+  final rootElements = createFlatArray(
+    view.rootNodesOrViewContainers,
+    constForEmpty: true,
+  );
+  final initParams = [rootElements];
+  final subscriptions = view.subscriptions.isEmpty
+      ? o.NULL_EXPR
+      : o.literalArr(view.subscriptions, null);
+
+  if (view.subscribesToMockLike) {
+    // Mock-like directives may have null subscriptions which must be
+    // filtered out to prevent an exception when they are later cancelled.
+    final notNull = o.variable('notNull');
+    final notNullAssignment = notNull.set(o.FunctionExpr(
+      [o.FnParam('i')],
+      [o.ReturnStatement(o.variable('i').notEquals(o.NULL_EXPR))],
+    ));
+    statements.add(notNullAssignment.toDeclStmt(null, [o.StmtModifier.Final]));
+    final notNullSubscriptions =
+        subscriptions.callMethod('where', [notNull]).callMethod('toList', []);
+    initParams.add(notNullSubscriptions);
+  } else {
+    initParams.add(subscriptions);
   }
 
-  if (isComponent) {
+  if (rootElements is o.LiteralArrayExpr &&
+      rootElements.entries.length <= 1 &&
+      subscriptions == o.NULL_EXPR) {
+    if (rootElements.entries.isEmpty) {
+      statements.add(
+        o.InvokeMemberMethodExpr('init0', const []).toStmt(),
+      );
+    } else {
+      statements.add(
+        o.InvokeMemberMethodExpr('init1', [rootElements.entries[0]]).toStmt(),
+      );
+    }
+  } else {
+    statements.add(o.InvokeMemberMethodExpr('init', initParams).toStmt());
+  }
+
+  if (isComponentRoot) {
     _writeComponentHostEventListeners(
       view,
       parser,
       statements,
-      rootEl: parentRenderNodeVar,
+      rootEl: cachedRootEl,
     );
+  }
 
-    if (view.component.isLegacyComponentState) {
-      // Connect ComponentState callback to view.
-      final setCallback = DetectChangesVars.internalSetStateChanged.callFn([
-        DetectChangesVars.cachedCtx,
-        o.ReadClassMemberExpr('markForCheck'),
-      ]);
-      statements.add(setCallback.toStmt());
-    }
+  if (isComponentRoot &&
+      view.component.changeDetection == ChangeDetectionStrategy.Stateful) {
+    // Connect ComponentState callback to view.
+    final setCallback = DetectChangesVars.internalSetStateChanged.callFn([
+      DetectChangesVars.cachedCtx,
+      o.ReadClassMemberExpr('markStateChanged'),
+    ]);
+    statements.add(setCallback.toStmt());
   }
 
   if (view.genConfig.profileFor == Profile.build) {
@@ -835,87 +792,26 @@ List<o.Statement> _generateBuildMethod(CompileView view, Parser parser) {
     if (view.nodes.isEmpty) {
       throwFailure('Template parser has crashed for ${view.className}');
     }
+    var hostElement = view.nodes[0] as CompileElement;
+    statements.add(
+        o.ReturnStatement(o.importExpr(Identifiers.ComponentRef).instantiate(
+      [
+        o.literal(hostElement.nodeIndex),
+        o.THIS_EXPR,
+        hostElement.renderNode.toReadExpr(),
+        hostElement.getComponent()
+      ],
+    )));
+    // Rely on the implicit `return null` for non host views. This reduces the
+    // size of output from dart2js.
   }
 
-  return [
-    ...profileStartStatements,
-    ...maybeCachedCtxDeclarationStatement(statements: statements),
-    ...statements,
-  ];
-}
-
-/// Returns a statement, if necessary, to record subscriptions or root nodes.
-///
-/// Returns null if no statement is necessary.
-o.Statement _generateInitStatement(CompileView view) {
-  switch (view.viewType) {
-    case ViewType.component:
-      // Component views have no root nodes, so we only need to record
-      // subscriptions if present.
-      if (view.subscriptions.isNotEmpty) {
-        return o.InvokeMemberMethodExpr('initSubscriptions', [
-          _maybeFilterSubscriptions(view),
-        ]).toStmt();
-      }
-      return null;
-    case ViewType.embedded:
-      final rootNodesExpr =
-          createFlatArray(view.rootNodesOrViewContainers, constForEmpty: true);
-      // Embedded views may have any number of root nodes and subscriptions.
-      if (rootNodesExpr is o.LiteralArrayExpr &&
-          rootNodesExpr.entries.length == 1 &&
-          view.subscriptions.isEmpty) {
-        // Optimized method for embedded views with a single root node and no
-        // subscriptions to avoid the cost of inlining any list allocations.
-        return o.InvokeMemberMethodExpr('initRootNode', [
-          rootNodesExpr.entries.single,
-        ]).toStmt();
-      } else {
-        return o.InvokeMemberMethodExpr(
-          'initRootNodesAndSubscriptions',
-          [
-            rootNodesExpr,
-            _maybeFilterSubscriptions(view),
-          ],
-        ).toStmt();
-      }
-      break;
-    case ViewType.host:
-      return o.InvokeMemberMethodExpr('initRootNode', [
-        // Host views should have exactly one root node.
-        view.rootNodesOrViewContainers.single,
-      ]).toStmt();
-    default:
-      throw StateError('Unsupported $ViewType: ${view.viewType}');
-  }
-}
-
-/// Returns [view.subscriptions], filtered for nulls if any are mock-like.
-///
-/// Normally it's assumed that directive outputs are non-null. However, when a
-/// directive is mock-like, meaning it overrides [Object.noSuchMethod], any of
-/// its outputs could now be null. This is prevalent in tests, where complex
-/// directives are commonly mocked. In such a case, any null outputs will result
-/// in null subscriptions which must be filtered so that the view doesn't
-/// attempt to cancel them when it's destroyed.
-///
-/// Returns a null expression if there are no subscriptions.
-o.Expression _maybeFilterSubscriptions(CompileView view) {
-  if (view.subscriptions.isEmpty) {
-    return o.NULL_EXPR;
-  }
-  final subscriptionsExpr = o.literalArr(view.subscriptions);
-  if (view.subscribesToMockLike) {
-    // Mock-like directives may have null subscriptions which must be
-    // filtered out to prevent an exception when they are later cancelled.
-    return subscriptionsExpr.callMethod('where', [
-      o.FunctionExpr(
-        [o.FnParam('i')],
-        [o.ReturnStatement(o.variable('i').notEquals(o.NULL_EXPR))],
-      )
-    ]).callMethod('toList', []);
-  }
-  return subscriptionsExpr;
+  declStatements
+      .addAll(maybeCachedCtxDeclarationStatement(statements: statements));
+  return []
+    ..addAll(profileStartStatements)
+    ..addAll(declStatements)
+    ..addAll(statements);
 }
 
 /// Writes shared event handler wiring for events that are directly defined
@@ -927,36 +823,89 @@ void _writeComponentHostEventListeners(
   @required o.Expression rootEl,
 }) {
   CompileDirectiveMetadata component = view.component;
-  var converter = BoundValueConverter.forView(view);
   for (String eventName in component.hostListeners.keys) {
-    var boundEvent = _parseEvent(component, eventName, parser);
+    String handlerSource = component.hostListeners[eventName];
+    var handlerAst = parser.parseAction(handlerSource, '', component.exports);
+    HandlerType handlerType = handlerTypeFromExpression(handlerAst);
+    o.Expression handlerExpr;
+    int numArgs;
+    if (handlerType == HandlerType.notSimple) {
+      var context = DetectChangesVars.cachedCtx;
+      var actionStmts = convertCdStatementToIr(
+        view.nameResolver,
+        context,
+        handlerAst,
+        // The only way a host listener could fail expression conversion is if
+        // the arguments specified in the `HostListener` annotation are invalid,
+        // but we don't have its source span to provide here.
+        null,
+        component,
+      );
+      var actionExpr = convertStmtIntoExpression(actionStmts.last);
+      List<o.Statement> stmts = <o.Statement>[o.ReturnStatement(actionExpr)];
+      String methodName = '_handle_${sanitizeEventName(eventName)}__';
+      view.methods.add(o.ClassMethod(
+          methodName,
+          [o.FnParam(EventHandlerVars.event.name, o.importType(null))],
+          []
+            ..addAll(maybeCachedCtxDeclarationStatement(statements: stmts))
+            ..addAll(stmts),
+          o.BOOL_TYPE,
+          [o.StmtModifier.Private]));
+      handlerExpr = o.ReadClassMemberExpr(methodName);
+      numArgs = 1;
+    } else {
+      var context = DetectChangesVars.cachedCtx;
+      var actionStmts = convertCdStatementToIr(
+        view.nameResolver,
+        context,
+        handlerAst,
+        // The only way a host listener could fail expression conversion is if
+        // the arguments specified in the `HostListener` annotation are invalid,
+        // but we don't have its source span to provide here.
+        null,
+        component,
+      );
+      var actionExpr = convertStmtIntoExpression(actionStmts.last);
+      assert(actionExpr is o.InvokeMethodExpr);
+      var callExpr = actionExpr as o.InvokeMethodExpr;
+      handlerExpr = o.ReadPropExpr(callExpr.receiver, callExpr.name);
+      numArgs = handlerType == HandlerType.simpleNoArgs ? 0 : 1;
+    }
 
-    o.Expression handlerExpr = converter.convertSourceToExpression(
-        boundEvent.source, boundEvent.target.type);
+    final wrappedHandlerExpr = o.InvokeMemberMethodExpr(
+      'eventHandler$numArgs',
+      [handlerExpr],
+    );
 
-    statements.add(bindingToUpdateStatement(
-      boundEvent,
-      rootEl,
-      null,
-      false,
-      handlerExpr,
-    ));
+    o.Expression listenExpr;
+    if (isNativeHtmlEvent(eventName)) {
+      listenExpr = rootEl.callMethod(
+        'addEventListener',
+        [o.literal(eventName), wrappedHandlerExpr],
+      );
+    } else {
+      final appViewUtilsExpr = o.importExpr(Identifiers.appViewUtils);
+      final eventManagerExpr = appViewUtilsExpr.prop('eventManager');
+      listenExpr = eventManagerExpr.callMethod(
+        'addEventListener',
+        [rootEl, o.literal(eventName), wrappedHandlerExpr],
+      );
+    }
+    statements.add(listenExpr.toStmt());
   }
 }
 
-ir.Binding _parseEvent(
-    CompileDirectiveMetadata component, String eventName, Parser parser) {
-  String handlerSource = component.hostListeners[eventName];
-  var handlerAst = parser.parseAction(handlerSource, '', component.exports);
-  var boundEvent = convertHostListenerToBinding(eventName, handlerAst);
-  return boundEvent;
-}
-
 o.OutputType _getContextType(CompileView view) {
-  return o.importType(
-    view.component.originType,
-    view.component.originType.typeParameters.map((t) => t.toType()).toList(),
-  );
+  // TODO(matanl): Cleanup in https://github.com/dart-lang/angular/issues/1421.
+  final originType = view.component.originType;
+  if (originType != null) {
+    return o.importType(
+      originType,
+      originType.typeParameters.map((t) => t.toType()).toList(),
+    );
+  }
+  return o.DYNAMIC_TYPE;
 }
 
 int _getChangeDetectionMode(CompileView view) {

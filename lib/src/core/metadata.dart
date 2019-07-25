@@ -13,6 +13,7 @@ export 'metadata/lifecycle_hooks.dart'
         AfterContentChecked,
         AfterViewInit,
         AfterViewChecked,
+        OnChanges,
         OnDestroy,
         OnInit,
         DoCheck;

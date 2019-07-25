@@ -154,7 +154,7 @@ class CompileElement extends CompileNode implements ProviderResolverHost {
   }
 
   CompileElement.root()
-      : this(null, null, null, NodeReference.rootElement(), null, null, [], [],
+      : this(null, null, null, NodeReference.appViewRoot(), null, null, [], [],
             false, false, []);
 
   void setEmbeddedView(CompileView view) {
@@ -233,7 +233,7 @@ class CompileElement extends CompileNode implements ProviderResolverHost {
 
     directiveInstances = <ProviderSource>[];
     for (var directive in _directives) {
-      var directiveInstance = getDirectiveSource(directive);
+      var directiveInstance = _providers.get(identifierToken(directive.type));
       directiveInstances.add(directiveInstance);
       for (var queryMeta in directive.queries) {
         _addQuery(queryMeta, directiveInstance);
@@ -428,19 +428,16 @@ class CompileElement extends CompileNode implements ProviderResolverHost {
       templateRefExpr,
     ];
 
-    return o.importExpr(Identifiers.loadDeferred).callFn(args);
+    return o.InvokeMemberMethodExpr('loadDeferred', args);
   }
 
   void addContentNode(int ngContentIndex, o.Expression nodeExpr) {
     contentNodesByNgContentIndex[ngContentIndex].add(nodeExpr);
   }
 
-  o.Expression getComponent() => getDirectiveSource(component)?.build();
-
-  ProviderSource getDirectiveSource(CompileDirectiveMetadata directive) =>
-      directive != null
-          ? _providers.get(identifierToken(directive.type))
-          : null;
+  o.Expression getComponent() => component != null
+      ? _providers.get(identifierToken(component.type)).build()
+      : null;
 
   // NodeProvidersHost implementation.
   @override

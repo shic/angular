@@ -1,17 +1,15 @@
 import 'dart:html';
 
-import 'package:meta/meta.dart';
 import 'package:angular/src/di/injector/injector.dart' show Injector;
 import 'package:angular/src/runtime.dart';
-
+import 'app_view.dart';
 import 'component_factory.dart' show ComponentFactory, ComponentRef;
 import 'component_loader.dart';
 import 'element_ref.dart';
 import 'template_ref.dart';
 import 'view_container_ref.dart';
 import 'view_ref.dart' show EmbeddedViewRef, ViewRef;
-import 'views/dynamic_view.dart';
-import 'views/view.dart';
+import 'view_type.dart';
 
 /// A container providing an insertion point for attaching children.
 ///
@@ -20,10 +18,10 @@ import 'views/view.dart';
 class ViewContainer extends ComponentLoader implements ViewContainerRef {
   final int index;
   final int parentIndex;
-  final View parentView;
+  final AppView<void> parentView;
   final Node nativeElement;
 
-  List<DynamicView> nestedViews;
+  List<AppView<void>> nestedViews;
 
   ViewContainer(
     this.index,
@@ -59,17 +57,6 @@ class ViewContainer extends ComponentLoader implements ViewContainerRef {
 
   @override
   Injector get injector => parentView.injector(index);
-
-  @experimental
-  void detectChangesInCheckAlwaysViews() {
-    final nested = nestedViews;
-    if (nested == null) {
-      return;
-    }
-    for (var i = 0, len = nested.length; i < len; i++) {
-      nested[i].detectChangesInCheckAlwaysViews();
-    }
-  }
 
   void detectChangesInNestedViews() {
     final nested = nestedViews;
@@ -187,9 +174,8 @@ class ViewContainer extends ComponentLoader implements ViewContainerRef {
     }
   }
 
-  List<T> mapNestedViews<T, U extends DynamicView>(
-    List<T> Function(U) callback,
-  ) {
+  List<T> mapNestedViews<T, U extends AppView<Object>>(
+      List<T> Function(U) callback) {
     final nestedViews = this.nestedViews;
     if (nestedViews == null || nestedViews.isEmpty) {
       return const <Null>[];
@@ -201,11 +187,12 @@ class ViewContainer extends ComponentLoader implements ViewContainerRef {
     return result;
   }
 
-  Node _findRenderNode(List<DynamicView> views, int index) {
+  Node _findRenderNode(List<AppView<Object>> views, int index) {
     return index > 0 ? views[index - 1].lastRootNode : nativeElement;
   }
 
-  void moveView(DynamicView view, int currentIndex) {
+  void moveView(AppView<Object> view, int currentIndex) {
+    _assertCanMove(view);
     final views = nestedViews;
     final previousIndex = views.indexOf(view);
 
@@ -215,30 +202,34 @@ class ViewContainer extends ComponentLoader implements ViewContainerRef {
     final refRenderNode = _findRenderNode(views, currentIndex);
 
     if (refRenderNode != null) {
-      view.addRootNodesAfter(refRenderNode);
+      view.attachRootNodesAfter(refRenderNode);
     }
 
-    view.wasMoved();
+    view.markContentChildAsMoved(this);
   }
 
-  void attachView(DynamicView view, int viewIndex) {
-    final views = nestedViews ?? <DynamicView>[];
+  void attachView(AppView<Object> view, int viewIndex) {
+    _assertCanMove(view);
+    final views = nestedViews ?? <AppView<Object>>[];
     views.insert(viewIndex, view);
 
     final refRenderNode = _findRenderNode(views, viewIndex);
     nestedViews = views;
 
     if (refRenderNode != null) {
-      view.addRootNodesAfter(refRenderNode);
+      view.attachRootNodesAfter(refRenderNode);
     }
 
-    view.wasInserted(this);
+    view.addToContentChildren(this);
   }
 
-  DynamicView detachView(int viewIndex) {
-    return nestedViews.removeAt(viewIndex)
-      ..removeRootNodes()
-      ..wasRemoved();
+  AppView<Object> detachView(int viewIndex) {
+    final view = nestedViews.removeAt(viewIndex);
+    _assertCanMove(view);
+    view
+      ..detachRootNodes()
+      ..removeFromContentChildren(this);
+    return view;
   }
 
   @override
@@ -247,4 +238,13 @@ class ViewContainer extends ComponentLoader implements ViewContainerRef {
     Injector injector,
   }) =>
       loadNextToLocation(component, this, injector: injector);
+}
+
+void _assertCanMove(AppView<Object> view) {
+  assert(() {
+    if (view.viewData.type == ViewType.component) {
+      throw ArgumentError("Component views can't be moved!");
+    }
+    return true;
+  }());
 }

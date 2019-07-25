@@ -20,6 +20,12 @@ class EmitterVisitorContext {
   int _indent;
   int _outputPos = 0;
 
+  /// Parameter names of the current method being emitted.
+  ///
+  /// This is used to automatically scope any member variables with `this` when
+  /// shadowed by a parameter.
+  Set<String> _parametersInScope;
+
   final List<_EmittedLine> _lines;
   final List<o.ClassStmt> _classes = [];
 
@@ -101,6 +107,20 @@ class EmitterVisitorContext {
         .toList()
         .join('\n');
   }
+
+  /// Creates method context for expressions.
+  void enterMethod(o.ClassMethod method) {
+    _parametersInScope = method.paramNames;
+  }
+
+  /// Removes method context for expressions.
+  void exitMethod() {
+    _parametersInScope = null;
+  }
+
+  /// Whether a class member is shadowed by a parameter with the same [name].
+  bool shadows(String name) =>
+      _parametersInScope != null && _parametersInScope.contains(name);
 }
 
 abstract class AbstractEmitterVisitor
@@ -296,7 +316,7 @@ abstract class AbstractEmitterVisitor
   @override
   void visitInvokeMemberMethodExpr(
       o.InvokeMemberMethodExpr expr, EmitterVisitorContext context) {
-    context.print('this.${expr.methodName}(');
+    context.print('${expr.methodName}(');
     visitAllExpressions(expr.args, context, ',');
     visitAllNamedExpressions(
       expr.namedArgs,

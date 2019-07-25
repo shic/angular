@@ -2,11 +2,6 @@ import 'dart:async';
 
 import 'package:meta/meta.dart';
 import 'package:stack_trace/stack_trace.dart';
-import 'package:angular/src/facade/exception_handler.dart';
-import 'package:angular/src/runtime.dart';
-
-/// **INTERNAL**: Creates [NgZone] with asynchronous stack traces enabled.
-NgZone debugAsyncStackTracesNgZone() => NgZone._debugAsyncStackTraces();
 
 /// Handles and observes the side-effects of executing callbacks in AngularDart.
 ///
@@ -71,24 +66,17 @@ class NgZone {
   int _pendingMicrotasks = 0;
   final _pendingTimers = <_WrappedTimer>[];
 
-  factory NgZone() => isDevMode && debugAsyncStackTraces
-      ? NgZone._debugAsyncStackTraces()
-      : NgZone._();
-
-  NgZone._() {
+  /// enabled in development mode as they significantly impact perf.
+  NgZone({bool enableLongStackTrace = false}) {
     _outerZone = Zone.current;
-    _innerZone = _createInnerZone(
-      Zone.current,
-      handleUncaughtError: _onErrorWithoutLongStackTrace,
-    );
-  }
 
-  NgZone._debugAsyncStackTraces() {
-    _outerZone = Zone.current;
-    _innerZone = Chain.capture(
-      () => _createInnerZone(Zone.current),
-      onError: _onErrorWithLongStackTrace,
-    );
+    if (enableLongStackTrace) {
+      _innerZone = Chain.capture(() => _createInnerZone(Zone.current),
+          onError: _onErrorWithLongStackTrace);
+    } else {
+      _innerZone = _createInnerZone(Zone.current,
+          handleUncaughtError: _onErrorWithoutLongStackTrace);
+    }
   }
 
   /// Whether we are currently executing within this AngularDart zone.
@@ -384,11 +372,19 @@ class NgZone {
   /// ```
   /// void example(NgZone zone) async {
   ///   someValue = true;
+  ///   // TODO(...): Remove this statement after following up with bug XXX.
   ///   zone.runAfterChangesObserved(() {
   ///     doSomethingDependentOnSomeValueChanging();
   ///   });
   /// }
   /// ```
+  ///
+  /// **WARNING**: This is not to be considered a permanent API fixture, as it
+  /// allows observing an event that is not relevant to all AngularDart apps -
+  /// for example components that use _stateful_ or other future types of change
+  /// detection may not be counted as part of this event. **Use sparingly**, and
+  /// consider filing bugs if you find yourself needing this function.
+  @experimental
   void runAfterChangesObserved(void Function() callback) {
     if (isRunning) {
       onTurnDone.first.whenComplete(() => scheduleMicrotask(callback));
@@ -426,7 +422,7 @@ bool hasPendingMacrotasks(NgZone zone) => zone._hasPendingMacrotasks;
 /// **INTERNAL ONLY**: This is an experimental API subject to change.
 @experimental
 bool inAngularZone(NgZone ngZone, Zone zone) {
-  return identical(zone[ngZone._thisZoneKey], true);
+  return identical(Zone.current[ngZone._thisZoneKey], true);
 }
 
 /// A `Timer` wrapper that lets you specify additional functions to call when it

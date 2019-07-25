@@ -1,19 +1,6 @@
+import 'package:angular_compiler/cli.dart';
+
 enum TokenType { Character, Identifier, Keyword, String, Operator, Number }
-
-class LexerError extends Error {
-  String input;
-  int position;
-  String message;
-
-  String get messageWithPosition =>
-      '$message at offset $position of expression';
-
-  @override
-  toString() =>
-      'Lexer Error: $message at column $position in expression [$input]';
-
-  LexerError(this.message, this.position, this.input);
-}
 
 class Lexer {
   List<Token> tokenize(String text) {
@@ -243,9 +230,7 @@ class _Scanner {
       case $BAR:
         return scanComplexOperator(start, '|', $BAR, '|');
       case $NBSP:
-        while (isWhitespace(this.peek)) {
-          advance();
-        }
+        while (isWhitespace(this.peek)) advance();
         return scanToken();
     }
     error('Unexpected character [${String.fromCharCode(peek)}]', 0);
@@ -281,9 +266,7 @@ class _Scanner {
   Token scanIdentifier() {
     int startIndex = index;
     advance();
-    while (isIdentifierPart(peek)) {
-      advance();
-    }
+    while (isIdentifierPart(peek)) advance();
     String str = input.substring(startIndex, index);
     if (keywords.contains(str)) {
       return newKeywordToken(startIndex, str);
@@ -346,7 +329,8 @@ class _Scanner {
 
   void error(String message, int offset) {
     int position = this.index + offset;
-    throw LexerError(message, position, input);
+    throw BuildError(
+        'Lexer Error: $message at column $position in expression [$input]');
   }
 
   int _consumeEscape() {

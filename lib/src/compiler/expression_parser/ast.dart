@@ -1,8 +1,13 @@
 import 'package:angular/src/compiler/analyzed_class.dart';
 import 'package:angular/src/compiler/compile_metadata.dart';
 
-abstract class AST {
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]);
+class AST {
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) {
+    return null;
+  }
+
+  @override
+  String toString() => 'AST';
 }
 
 class NamedExpr extends AST {
@@ -12,13 +17,13 @@ class NamedExpr extends AST {
   NamedExpr(this.name, this.expression);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitNamedExpr(this, context);
 }
 
 class EmptyExpr extends AST {
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitEmptyExpr(this, context);
 }
 
@@ -31,13 +36,13 @@ class StaticRead extends AST {
   StaticRead(this.id);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitStaticRead(this, context);
 }
 
 class ImplicitReceiver extends AST {
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitImplicitReceiver(this, context);
 }
 
@@ -46,7 +51,7 @@ class Chain extends AST {
   List<AST> expressions;
   Chain(this.expressions);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitChain(this, context);
 }
 
@@ -56,7 +61,7 @@ class Conditional extends AST {
   AST falseExp;
   Conditional(this.condition, this.trueExp, this.falseExp);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitConditional(this, context);
 }
 
@@ -70,7 +75,7 @@ class IfNull extends AST {
 
   IfNull(this.condition, this.nullExp);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitIfNull(this, context);
 }
 
@@ -79,7 +84,7 @@ class PropertyRead extends AST {
   String name;
   PropertyRead(this.receiver, this.name);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitPropertyRead(this, context);
 }
 
@@ -89,7 +94,7 @@ class PropertyWrite extends AST {
   AST value;
   PropertyWrite(this.receiver, this.name, this.value);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) {
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) {
     return visitor.visitPropertyWrite(this, context);
   }
 }
@@ -99,7 +104,7 @@ class SafePropertyRead extends AST {
   String name;
   SafePropertyRead(this.receiver, this.name);
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitSafePropertyRead(this, context);
 }
 
@@ -109,7 +114,7 @@ class KeyedRead extends AST {
   KeyedRead(this.obj, this.key);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitKeyedRead(this, context);
 }
 
@@ -120,7 +125,7 @@ class KeyedWrite extends AST {
   KeyedWrite(this.obj, this.key, this.value);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitKeyedWrite(this, context);
 }
 
@@ -131,7 +136,7 @@ class BindingPipe extends AST {
   BindingPipe(this.exp, this.name, this.args);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitPipe(this, context);
 }
 
@@ -140,7 +145,7 @@ class LiteralPrimitive extends AST {
   LiteralPrimitive(this.value);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitLiteralPrimitive(this, context);
 }
 
@@ -149,7 +154,7 @@ class LiteralArray extends AST {
   LiteralArray(this.expressions);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitLiteralArray(this, context);
 }
 
@@ -159,7 +164,7 @@ class LiteralMap extends AST {
   LiteralMap(this.keys, this.values);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) {
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) {
     return visitor.visitLiteralMap(this, context);
   }
 }
@@ -170,7 +175,7 @@ class Interpolation extends AST {
   Interpolation(this.strings, this.expressions);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) {
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) {
     return visitor.visitInterpolation(this, context);
   }
 }
@@ -182,7 +187,7 @@ class Binary extends AST {
   Binary(this.operation, this.left, this.right);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitBinary(this, context);
 }
 
@@ -191,7 +196,7 @@ class PrefixNot extends AST {
   PrefixNot(this.expression);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitPrefixNot(this, context);
 }
 
@@ -208,7 +213,7 @@ class MethodCall extends AST {
   ]);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitMethodCall(this, context);
 }
 
@@ -225,7 +230,7 @@ class SafeMethodCall extends AST {
   ]);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitSafeMethodCall(this, context);
 }
 
@@ -240,20 +245,20 @@ class FunctionCall extends AST {
   ]);
 
   @override
-  R visit<R, C, CO extends C>(AstVisitor<R, C> visitor, [CO context]) =>
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) =>
       visitor.visitFunctionCall(this, context);
 }
 
-class ASTWithSource {
+class ASTWithSource extends AST {
   AST ast;
   String source;
   String location;
   ASTWithSource(this.ast, this.source, this.location);
 
-  ASTWithSource.from(ASTWithSource original, AST transformed)
-      : this(transformed, original.source, original.location);
-
-  ASTWithSource.missingSource(AST ast) : this(ast, null, null);
+  @override
+  R visit<R, C>(AstVisitor<R, C> visitor, [C context]) {
+    return this.ast.visit(visitor, context);
+  }
 
   @override
   String toString() => '$source in $location';

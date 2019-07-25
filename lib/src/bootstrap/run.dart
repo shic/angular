@@ -11,7 +11,7 @@ import '../core/linker.dart'
 import '../core/linker/app_view_utils.dart';
 import '../core/linker/component_resolver.dart' show typeToFactory;
 import '../core/testability/testability.dart';
-import '../core/zone/ng_zone.dart';
+import '../core/zone.dart';
 import '../di/injector/empty.dart';
 import '../di/injector/hierarchical.dart';
 import '../di/injector/injector.dart';
@@ -20,9 +20,6 @@ import '../runtime/dom_events.dart';
 import '../security/dom_sanitization_service.dart';
 
 import 'modules.dart';
-
-/// Used as a "tear-off" of [NgZone].
-NgZone _createNgZone() => NgZone();
 
 /// **INTERNAL ONLY**: Creates a new application-level Injector.
 ///
@@ -36,7 +33,7 @@ NgZone _createNgZone() => NgZone();
 /// `angular_test` package).
 Injector appInjector(
   InjectorFactory userProvidedInjector, {
-  NgZone Function() createNgZone = _createNgZone,
+  NgZone Function() createNgZone = createNgZone,
 }) {
   // These are the required root services, always provided by AngularDart.
   final Injector minimalInjector = appGlobals.createAppInjector(minimalApp);
@@ -48,7 +45,7 @@ Injector appInjector(
     ApplicationRef: () => applicationRef,
     AppViewUtils: () => appViewUtils,
     NgZone: () => ngZone,
-    Testability: () => Testability(ngZone),
+    Testability: () => new Testability(ngZone),
   }, unsafeCast(minimalInjector));
 
   // These are the user-provided overrides.
@@ -342,8 +339,8 @@ Future<ComponentRef<T>> bootstrapStatic<T>(
 ]) =>
     Future.microtask(
       () => runAppLegacy(
-        componentType,
-        createInjectorFromProviders: providers,
-        initReflector: initReflector,
-      ),
+            componentType,
+            createInjectorFromProviders: providers,
+            initReflector: initReflector,
+          ),
     );

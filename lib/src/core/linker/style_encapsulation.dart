@@ -44,10 +44,10 @@ class ComponentStyles {
 
   ComponentStyles._(
     this._styles,
-    this._componentUrl, [
-    this._componentId = '',
-    this.contentPrefix = '',
-    this.hostPrefix = '',
+    this.contentPrefix,
+    this.hostPrefix, [
+    this._componentId,
+    this._componentUrl,
   ]) {
     _appendStyles();
   }
@@ -58,21 +58,26 @@ class ComponentStyles {
 
   /// Creates a [ComponentStyles] that applies style encapsulation.
   @dart2js.noInline
-  factory ComponentStyles.scoped(List<Object> styles, String componentUrl) {
+  factory ComponentStyles.scoped(
+    List<Object> styles, [
+    String componentUrl,
+  ]) {
     final componentId = '${appViewUtils.appId}-${_nextUniqueId++}';
     return ComponentStyles._(
       styles,
-      componentUrl,
-      componentId,
       '$_viewClassPrefix$componentId',
       '$_hostClassPrefix$componentId',
+      componentId,
+      componentUrl,
     );
   }
 
   /// Creates a [ComponentStyles] that directly appends [styles] to the DOM.
   @dart2js.noInline
-  factory ComponentStyles.unscoped(List<Object> styles, String componentUrl) =
-      _UnscopedComponentStyles;
+  factory ComponentStyles.unscoped(
+    List<Object> styles, [
+    String componentUrl,
+  ]) = _UnscopedComponentStyles;
 
   /// Whether style encapsulation is used by this instance.
   ///
@@ -94,8 +99,10 @@ class ComponentStyles {
 }
 
 class _UnscopedComponentStyles extends ComponentStyles {
-  _UnscopedComponentStyles(List<Object> styles, String componentUrl)
-      : super._(styles, componentUrl);
+  _UnscopedComponentStyles(
+    List<Object> styles, [
+    String componentUrl,
+  ]) : super._(styles, '', '', '', componentUrl);
 
   @override
   bool get usesStyleEncapsulation => false;
@@ -105,7 +112,7 @@ class _UnscopedComponentStyles extends ComponentStyles {
 List<String> _flattenStyles(
   List<Object> styles,
   List<String> target,
-  String componentId,
+  String componentIdOrNull,
 ) {
   if (styles == null || styles.isEmpty) {
     return target;
@@ -113,10 +120,14 @@ List<String> _flattenStyles(
   for (var i = 0, l = styles.length; i < l; i++) {
     final styleOrList = styles[i];
     if (styleOrList is List<Object>) {
-      _flattenStyles(styleOrList, target, componentId);
+      _flattenStyles(
+        styleOrList,
+        target,
+        componentIdOrNull,
+      );
     } else {
       final styleString = unsafeCast<String>(styleOrList);
-      target.add(styleString.replaceAll(_idPlaceholder, componentId));
+      target.add(styleString.replaceAll(_idPlaceholder, componentIdOrNull));
     }
   }
   return target;

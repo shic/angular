@@ -12,10 +12,16 @@ import 'package:angular/src/compiler/ir/model.dart' as ir;
 import 'package:angular/src/compiler/output/convert.dart'
     show typeArgumentsFrom;
 import 'package:angular/src/compiler/output/output_ast.dart' as o;
-import 'package:angular/src/compiler/semantic_analysis/binding_converter.dart'
-    show convertAllToBinding, convertHostAttributeToBinding;
-import 'package:angular/src/compiler/template_ast.dart' show ElementAst;
+import 'package:angular/src/compiler/template_ast.dart'
+    show
+        AttrAst,
+        AttributeValue,
+        ElementAst,
+        I18nAttributeValue,
+        LiteralAttributeValue;
 import 'package:angular/src/core/linker/view_type.dart';
+import 'package:angular/src/core/security.dart';
+import 'package:angular_compiler/cli.dart';
 
 import 'compile_view.dart' show CompileView, ReadNodeReferenceExpr;
 import 'constants.dart';
@@ -27,11 +33,22 @@ const namespaceUris = {
   'xhtml': 'http://www.w3.org/1999/xhtml'
 };
 
-/// All properties of `RenderView` that don't need a cast to access.
-final _renderViewProperties = Set<String>.from([
-  'componentStyles',
-  'parentIndex',
+/// All fields and getters defined on [AppView] that don't need a cast in
+/// getPropertyInView.
+final _appViewFields = Set<String>.from([
+  'viewData',
+  'locals',
   'parentView',
+  'componentType',
+  'rootEl',
+  'ctx',
+  'cdMode',
+  'cdState',
+  'ref',
+  'projectedNodes',
+  'changeDetectorRef',
+  'flatRootNodes',
+  'lastRootNode',
 ]);
 
 final _unsafeCastFn = o.importExpr(Identifiers.unsafeCast);
@@ -66,10 +83,10 @@ o.Expression getPropertyInView(
           'in a parent view: $property');
     }
 
-    // Don't cast properties of `RenderView`.
+    // Note: Don't cast for members of the AppView base class...
     return replaceReadClassMemberInExpression(
         property,
-        (name) => _renderViewProperties.contains(name)
+        (String name) => _appViewFields.contains(name)
             ? viewProp
             : unsafeCast(viewProp, definedView.classType));
   }
@@ -119,10 +136,13 @@ o.Expression injectFromViewParentInjector(
   final viewExpr = (view.viewType == ViewType.host)
       ? o.THIS_EXPR
       : o.ReadClassMemberExpr('parentView');
-  return viewExpr.callMethod(optional ? 'injectorGetOptional' : 'injectorGet', [
-    createDiTokenExpression(token),
-    o.ReadClassMemberExpr('parentIndex'),
-  ]);
+  return viewExpr.callMethod(
+    optional ? 'injectorGetOptional' : 'injectorGet',
+    [
+      createDiTokenExpression(token),
+      o.ReadClassMemberExpr('viewData').prop('parentIndex')
+    ],
+  );
 }
 
 o.Statement debugInjectorEnter(o.Expression identifier) =>
@@ -317,10 +337,61 @@ String toTemplateExtension(String moduleUrl) {
 List<ir.Binding> mergeHtmlAndDirectiveAttributes(
     ElementAst elementAst, List<CompileDirectiveMetadata> directives) {
   var attrs = elementAst.attrs;
-  var htmlAttrs = convertAllToBinding(attrs);
+  var htmlAttrs = _attributeToIr(attrs, elementAst.name);
   // Create statements to initialize literal attribute values.
   // For example, a directive may have hostAttributes setting class name.
   return _mergeHtmlAndDirectiveAttrs(htmlAttrs, directives);
+}
+
+List<ir.Binding> _attributeToIr(List<AttrAst> attrs, String elementName) {
+  var htmlAttrs = <ir.Binding>[];
+  for (AttrAst attr in attrs) {
+    htmlAttrs.add(ir.Binding(
+        source: _attributeValue(attr.value), target: attributeName(attr.name)));
+  }
+  return htmlAttrs;
+}
+
+ir.BindingTarget attributeName(String name) {
+  String attrNs;
+  if (name.startsWith('@') && name.contains(':')) {
+    var nameParts = name.substring(1).split(':');
+    attrNs = nameParts[0];
+    name = nameParts[1];
+  }
+  bool isConditional = false;
+  if (name.endsWith('.if')) {
+    isConditional = true;
+    name = name.substring(0, name.length - 3);
+  }
+  if (name == 'class') {
+    _throwIfConditional(isConditional, name);
+    return ir.ClassBinding();
+  }
+  if (name == 'tabindex' || name == 'tabIndex') {
+    _throwIfConditional(isConditional, name);
+    return ir.TabIndexBinding();
+  }
+  return ir.AttributeBinding(name,
+      namespace: attrNs,
+      isConditional: isConditional,
+      securityContext: TemplateSecurityContext.none);
+}
+
+void _throwIfConditional(bool isConditional, String name) {
+  if (isConditional) {
+    // TODO(b/128689252): Move to validation phase.
+    throw BuildError('$name.if is not supported');
+  }
+}
+
+ir.BindingSource _attributeValue(AttributeValue<Object> attr) {
+  if (attr is LiteralAttributeValue) {
+    return ir.StringLiteral(attr.value);
+  } else if (attr is I18nAttributeValue) {
+    return ir.BoundI18nMessage(attr.value);
+  }
+  throw ArgumentError.value(attr, 'attr', 'Unknown $AttributeValue type.');
 }
 
 /// Merges host attributes from [directives] with [declaredHtmlAttrs].
@@ -367,9 +438,7 @@ List<ir.Binding> _mergeHtmlAndDirectiveAttrs(
       // binding that came earlier takes priority.
       if (isComponent && !shouldMerge) continue;
 
-      var value = convertHostAttributeToBinding(
-          name,
-          ast.ASTWithSource.missingSource(directiveMeta.hostAttributes[name]),
+      var value = _hostAttributeToIr(name, directiveMeta.hostAttributes[name],
           directiveMeta.analyzedClass);
       var prevValue = result[name];
       result[name] = prevValue != null
@@ -405,6 +474,13 @@ void _increment(Map<String, int> mergeCount, String name) {
   mergeCount[name]++;
 }
 
+ir.Binding _hostAttributeToIr(
+    String name, ast.AST ast, AnalyzedClass analyzedClass) {
+  return ir.Binding(
+      target: attributeName(name),
+      source: ir.BoundExpression(ast, null, analyzedClass));
+}
+
 ir.Binding _mergeAttributeValue(
   String attrName,
   ir.Binding attr1,
@@ -433,8 +509,8 @@ ir.Binding _mergeAttributeValue(
     return ir.Binding(
         target: attr1.target,
         source: ir.BoundExpression(
-            ast.ASTWithSource.missingSource(ast.Interpolation(
-                ['', ' ', ''], [_asAst(attrValue1), _asAst(attrValue2)])),
+            ast.Interpolation(
+                ['', ' ', ''], [_asAst(attrValue1), _asAst(attrValue2)]),
             null,
             analyzedClass));
   }
@@ -442,7 +518,7 @@ ir.Binding _mergeAttributeValue(
 
 ast.AST _asAst(ir.BindingSource bindingSource) {
   if (bindingSource is ir.BoundExpression) {
-    return bindingSource.expression.ast;
+    return bindingSource.expression;
   } else if (bindingSource is ir.StringLiteral) {
     return ast.LiteralPrimitive(bindingSource.value);
   }
@@ -450,7 +526,7 @@ ast.AST _asAst(ir.BindingSource bindingSource) {
       bindingSource,
       'bindingSource',
       'BindingSource implementation $bindingSource doesn\'t support conversion '
-          'to an AST.');
+      'to an AST.');
 }
 
 List<ir.Binding> _toSortedBindings(Map<String, ir.Binding> attributes) =>
@@ -458,34 +534,40 @@ List<ir.Binding> _toSortedBindings(Map<String, ir.Binding> attributes) =>
 
 Map<K, V> _toSortedMap<K, V>(Map<K, V> data) => SplayTreeMap.from(data);
 
-final Map<String, CompileIdentifierMetadata> _tagNameToIdentifier = {
-  'a': Identifiers.HTML_ANCHOR_ELEMENT,
-  'area': Identifiers.HTML_AREA_ELEMENT,
-  'audio': Identifiers.HTML_AUDIO_ELEMENT,
-  'button': Identifiers.HTML_BUTTON_ELEMENT,
-  'canvas': Identifiers.HTML_CANVAS_ELEMENT,
-  'div': Identifiers.HTML_DIV_ELEMENT,
-  'form': Identifiers.HTML_FORM_ELEMENT,
-  'iframe': Identifiers.HTML_IFRAME_ELEMENT,
-  'input': Identifiers.HTML_INPUT_ELEMENT,
-  'image': Identifiers.HTML_IMAGE_ELEMENT,
-  'media': Identifiers.HTML_MEDIA_ELEMENT,
-  'menu': Identifiers.HTML_MENU_ELEMENT,
-  'ol': Identifiers.HTML_OLIST_ELEMENT,
-  'option': Identifiers.HTML_OPTION_ELEMENT,
-  'col': Identifiers.HTML_TABLE_COL_ELEMENT,
-  'row': Identifiers.HTML_TABLE_ROW_ELEMENT,
-  'select': Identifiers.HTML_SELECT_ELEMENT,
-  'table': Identifiers.HTML_TABLE_ELEMENT,
-  'text': Identifiers.HTML_TEXT_NODE,
-  'textarea': Identifiers.HTML_TEXTAREA_ELEMENT,
-  'ul': Identifiers.HTML_ULIST_ELEMENT,
-  'svg': Identifiers.SVG_SVG_ELEMENT,
-};
+Map<String, CompileIdentifierMetadata> _tagNameToIdentifier;
 
 /// Returns strongly typed html elements to improve code generation.
-CompileIdentifierMetadata identifierFromTagName(String name) =>
-    _tagNameToIdentifier[name.toLowerCase()] ?? Identifiers.HTML_ELEMENT;
+CompileIdentifierMetadata identifierFromTagName(String name) {
+  _tagNameToIdentifier ??= {
+    'a': Identifiers.HTML_ANCHOR_ELEMENT,
+    'area': Identifiers.HTML_AREA_ELEMENT,
+    'audio': Identifiers.HTML_AUDIO_ELEMENT,
+    'button': Identifiers.HTML_BUTTON_ELEMENT,
+    'canvas': Identifiers.HTML_CANVAS_ELEMENT,
+    'div': Identifiers.HTML_DIV_ELEMENT,
+    'form': Identifiers.HTML_FORM_ELEMENT,
+    'iframe': Identifiers.HTML_IFRAME_ELEMENT,
+    'input': Identifiers.HTML_INPUT_ELEMENT,
+    'image': Identifiers.HTML_IMAGE_ELEMENT,
+    'media': Identifiers.HTML_MEDIA_ELEMENT,
+    'menu': Identifiers.HTML_MENU_ELEMENT,
+    'ol': Identifiers.HTML_OLIST_ELEMENT,
+    'option': Identifiers.HTML_OPTION_ELEMENT,
+    'col': Identifiers.HTML_TABLE_COL_ELEMENT,
+    'row': Identifiers.HTML_TABLE_ROW_ELEMENT,
+    'select': Identifiers.HTML_SELECT_ELEMENT,
+    'table': Identifiers.HTML_TABLE_ELEMENT,
+    'text': Identifiers.HTML_TEXT_NODE,
+    'textarea': Identifiers.HTML_TEXTAREA_ELEMENT,
+    'ul': Identifiers.HTML_ULIST_ELEMENT,
+    'svg': Identifiers.SVG_SVG_ELEMENT,
+  };
+  String tagName = name.toLowerCase();
+  var elementType = _tagNameToIdentifier[tagName];
+  elementType ??= Identifiers.HTML_ELEMENT;
+  // TODO: classify as HtmlElement or SvgElement to improve further.
+  return elementType;
+}
 
 const _htmlTagNames = <String>{
   'a',

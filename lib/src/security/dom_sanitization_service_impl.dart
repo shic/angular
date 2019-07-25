@@ -24,10 +24,9 @@ class DomSanitizationServiceImpl implements DomSanitizationService {
   String sanitizeHtml(value) {
     if (value == null) return null;
     if (value is SafeHtmlImpl) return value.changingThisWillBypassSecurityTrust;
-    if (value is SafeValue) {
+    if (value is SafeValue)
       throw UnsupportedError(
           'Unexpected SecurityContext $value, expecting html');
-    }
     return sanitizeHtmlInternal(unsafeCast(value));
   }
 
@@ -37,10 +36,9 @@ class DomSanitizationServiceImpl implements DomSanitizationService {
     if (value is SafeStyleImpl) {
       return value.changingThisWillBypassSecurityTrust;
     }
-    if (value is SafeValue) {
+    if (value is SafeValue)
       throw UnsupportedError('Unexpected SecurityContext $value, '
           'expecting style');
-    }
     if (value == null) return null;
     return internalSanitizeStyle(value is String ? value : value.toString());
   }
@@ -49,10 +47,9 @@ class DomSanitizationServiceImpl implements DomSanitizationService {
   String sanitizeUrl(value) {
     if (value == null) return null;
     if (value is SafeUrlImpl) return value.changingThisWillBypassSecurityTrust;
-    if (value is SafeValue) {
+    if (value is SafeValue)
       throw UnsupportedError('Unexpected SecurityContext $value, '
           'expecting url');
-    }
     return internalSanitizeUrl(value.toString());
   }
 
@@ -62,10 +59,9 @@ class DomSanitizationServiceImpl implements DomSanitizationService {
     if (value is SafeResourceUrlImpl) {
       return value.changingThisWillBypassSecurityTrust;
     }
-    if (value is SafeValue) {
+    if (value is SafeValue)
       throw UnsupportedError('Unexpected SecurityContext $value, '
           'expecting resource url');
-    }
     throw UnsupportedError(
         'Security violation in resource url. Create SafeValue');
   }

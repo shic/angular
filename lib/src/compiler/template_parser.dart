@@ -198,9 +198,8 @@ List<T> removeDuplicates<T>(List<T> items) {
         CompileDirectiveMetadata itemMeta = item as CompileDirectiveMetadata;
         return rMeta.type.name == itemMeta.type.name &&
             rMeta.type.moduleUrl == itemMeta.type.moduleUrl;
-      } else {
+      } else
         throw ArgumentError();
-      }
     }).isNotEmpty;
     if (!hasMatch) {
       res.add(item);

@@ -228,9 +228,8 @@ class DefaultIterableDiffer {
             // TODO(misko): can we limit this to duplicates only?
             record = this._verifyReinsertion(record, item, itemTrackBy, index);
           }
-          if (!identical(record.item, item)) {
+          if (!identical(record.item, item))
             this._addIdentityChange(record, item);
-          }
         }
         record = record._next;
       }
@@ -247,9 +246,8 @@ class DefaultIterableDiffer {
             // TODO(misko): can we limit this to duplicates only?
             record = this._verifyReinsertion(record, item, itemTrackBy, index);
           }
-          if (!identical(record.item, item)) {
+          if (!identical(record.item, item))
             this._addIdentityChange(record, item);
-          }
         }
         record = record._next;
         index++;
@@ -342,9 +340,8 @@ class DefaultIterableDiffer {
         // It is an item which we have evicted earlier: reinsert it back into
         // the list. But first we need to check if identity changed, so we can
         // update in view if necessary
-        if (!identical(record.item, item)) {
+        if (!identical(record.item, item))
           this._addIdentityChange(record, item);
-        }
         this._reinsertAfter(record, previousRecord, index);
       } else {
         // It is a new item: add it.

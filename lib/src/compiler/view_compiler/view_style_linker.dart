@@ -6,9 +6,8 @@ import 'package:angular/src/core/metadata.dart';
 import 'compile_view.dart';
 
 void initStyleEncapsulation(CompileView view, o.ClassStmt viewClass) {
-  // Only component views initialize styles; embedded views inherit them from
-  // their parent, and host views have none.
-  if (view.viewType == ViewType.component) {
+  // Host views never have styles to initializes.
+  if (view.viewType != ViewType.host) {
     _ViewStyleLinker(view, viewClass).initStyleEncapsulation();
   }
 }
@@ -26,6 +25,8 @@ class _ViewStyleLinker {
       : assert(_view != null),
         assert(_class != null);
 
+  bool get _isComponentView => _view.viewType == ViewType.component;
+
   bool get _hasScopedStyles =>
       _view.component.template.encapsulation == ViewEncapsulation.Emulated;
 
@@ -42,6 +43,12 @@ class _ViewStyleLinker {
       0,
       o.InvokeMemberMethodExpr(_initComponentStyles, const []).toStmt(),
     );
+    if (_isComponentView) {
+      _initStyleEncapsulationForComponentViews();
+    }
+  }
+
+  void _initStyleEncapsulationForComponentViews() {
     _addStaticDebugUrlGetter();
     _addStaticComponentStylesField();
     _overrideInitComponentStyles();

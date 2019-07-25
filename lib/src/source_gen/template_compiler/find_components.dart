@@ -5,7 +5,6 @@ import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/dart/element/visitor.dart';
 import 'package:analyzer/src/dart/element/element.dart';
 import 'package:build/build.dart';
-import 'package:path/path.dart' as p;
 import 'package:source_gen/source_gen.dart';
 import 'package:angular/src/compiler/analyzed_class.dart';
 import 'package:angular/src/compiler/compile_metadata.dart';
@@ -17,6 +16,7 @@ import 'package:angular/src/compiler/view_compiler/property_binder.dart'
     show isPrimitiveTypeName;
 import 'package:angular/src/core/change_detection/constants.dart';
 import 'package:angular/src/core/metadata.dart';
+import 'package:angular/src/core/metadata/lifecycle_hooks.dart';
 import 'package:angular/src/source_gen/common/annotation_matcher.dart';
 import 'package:angular/src/source_gen/common/url_resolver.dart';
 import 'package:angular_compiler/angular_compiler.dart';
@@ -34,14 +34,12 @@ const _statefulDirectiveFields = [
 ];
 
 AngularArtifacts findComponentsAndDirectives(
-  LibraryReader library,
-  ComponentVisitorExceptionHandler exceptionHandler,
-) {
-  final visitor = _NormalizedComponentVisitor(library, exceptionHandler);
-  library.element.accept(visitor);
+    LibraryReader library, ComponentVisitorExceptionHandler exceptionHandler) {
+  var componentVisitor = _NormalizedComponentVisitor(library, exceptionHandler);
+  library.element.accept(componentVisitor);
   return AngularArtifacts(
-    components: visitor.components,
-    directives: visitor.directives,
+    componentVisitor.components,
+    componentVisitor.directives,
   );
 }
 
@@ -54,28 +52,22 @@ class _NormalizedComponentVisitor extends RecursiveElementVisitor<Null> {
 
   _NormalizedComponentVisitor(this._library, this._exceptionHandler);
 
-  _ComponentVisitor _visitor() =>
-      _ComponentVisitor(_library, _exceptionHandler);
-
   @override
   Null visitClassElement(ClassElement element) {
-    final directive = element.accept(_visitor());
+    final directive =
+        element.accept(_ComponentVisitor(_library, _exceptionHandler));
     if (directive != null) {
       if (directive.isComponent) {
         final directives = _visitDirectives(element);
         final directiveTypes = _visitDirectiveTypes(element);
         final pipes = _visitPipes(element);
         _errorOnUnusedDirectiveTypes(
-          element,
+            element, directives, directiveTypes, _exceptionHandler);
+        components.add(NormalizedComponentWithViewDirectives(
+          directive,
           directives,
           directiveTypes,
-          _exceptionHandler,
-        );
-        components.add(NormalizedComponentWithViewDirectives(
-          component: directive,
-          directives: directives,
-          directiveTypes: directiveTypes,
-          pipes: pipes,
+          pipes,
         ));
       } else {
         directives.add(directive);
@@ -86,7 +78,8 @@ class _NormalizedComponentVisitor extends RecursiveElementVisitor<Null> {
 
   @override
   Null visitFunctionElement(FunctionElement element) {
-    final directive = element.accept(_visitor());
+    final directive =
+        element.accept(_ComponentVisitor(_library, _exceptionHandler));
     if (directive != null) {
       directives.add(directive);
     }
@@ -96,7 +89,8 @@ class _NormalizedComponentVisitor extends RecursiveElementVisitor<Null> {
   List<CompileDirectiveMetadata> _visitDirectives(ClassElement element) {
     final values = _getResolvedArgumentsOrFail(element, 'directives');
     return visitAll(values, (value) {
-      return typeDeclarationOf(value)?.accept(_visitor());
+      return typeDeclarationOf(value)
+          ?.accept(_ComponentVisitor(_library, _exceptionHandler));
     });
   }
 
@@ -163,15 +157,15 @@ class _NormalizedComponentVisitor extends RecursiveElementVisitor<Null> {
             break;
           }
           final values = argument.expression as ListLiteral;
-          if (values.elements.isNotEmpty &&
+          if (values.elements2.isNotEmpty &&
               // Avoid an edge case where all of your entries are just empty
               // lists. Not likely to happen, but might as well check anyway at
               // this point.
-              values.elements.every(
+              values.elements2.every(
                   (e) => (e as Expression).staticType?.isDynamic != false)) {
             // We didn't resolve something.
             _exceptionHandler.handle(UnresolvedExpressionError(
-              values.elements.where(
+              values.elements2.where(
                   (e) => (e as Expression).staticType?.isDynamic != false),
               element,
               annotationImpl.compilationUnit,
@@ -225,35 +219,15 @@ class _ComponentVisitor
 
   @override
   CompileDirectiveMetadata visitClassElement(ClassElement element) {
-    AnnotationInformation<ClassElement> directiveInfo;
-    AnnotationInformation<ClassElement> linkInfo;
+    final annotationInfo =
+        annotationWhere(element, safeMatcher(isDirective), _exceptionHandler);
+    if (annotationInfo == null) return null;
 
-    for (var index = 0; index < element.metadata.length; index++) {
-      final annotation = element.metadata[index];
-      final annotationInfo =
-          AnnotationInformation(element, annotation, index, _exceptionHandler);
-      final constantValue = annotationInfo.constantValue;
-      if (constantValue == null) {
-        _exceptionHandler.handleWarning(AngularAnalysisError(
-          annotationInfo.constantEvaluationErrors,
-          annotationInfo,
-        ));
-      } else if (safeMatcher(isDirective)(annotation)) {
-        directiveInfo = annotationInfo;
-      } else if ($ChangeDetectionLink.isExactlyType(constantValue.type)) {
-        linkInfo = annotationInfo;
-      }
-      if (directiveInfo != null && linkInfo != null) {
-        break;
-      }
-    }
-
-    if (directiveInfo == null) return null;
     if (element.isPrivate) {
       log.severe('Components and directives must be public: $element');
       return null;
     }
-    return _createCompileDirectiveMetadata(directiveInfo, linkInfo);
+    return _createCompileDirectiveMetadata(annotationInfo);
   }
 
   @override
@@ -301,7 +275,6 @@ class _ComponentVisitor
       originType: type,
       metadataType: CompileDirectiveMetadataType.FunctionalDirective,
       selector: selector,
-      analyzedClass: null,
       inputs: const {},
       inputTypes: const {},
       outputs: const {},
@@ -577,8 +550,8 @@ class _ComponentVisitor
     // Merge field and setter inputs, so that a derived field input binding is
     // not overridden by an inherited setter input.
     _inputs..addAll(_fieldInputs)..addAll(_setterInputs);
-    _fieldInputs.clear();
-    _setterInputs.clear();
+    _fieldInputs..clear();
+    _setterInputs..clear();
   }
 
   /// Collects inheritable metadata from [element] and its supertypes.
@@ -592,11 +565,9 @@ class _ComponentVisitor
   }
 
   CompileDirectiveMetadata _createCompileDirectiveMetadata(
-    AnnotationInformation<ClassElement> directiveInfo,
-    AnnotationInformation<ClassElement> linkInfo,
-  ) {
-    final element = directiveInfo.element;
-    final annotation = directiveInfo.annotation;
+      AnnotationInformation<ClassElement> annotationInfo) {
+    final element = annotationInfo.element;
+    final annotation = annotationInfo.annotation;
 
     _directiveClassElement = element;
     DirectiveVisitor(
@@ -604,93 +575,27 @@ class _ComponentVisitor
       onHostListener: _addHostListener,
     ).visitDirective(element);
     _collectInheritableMetadata(element);
-    final isComponent = directiveInfo.isComponent;
-    final annotationValue = directiveInfo.constantValue;
+    final isComp = annotationInfo.isComponent;
+    final annotationValue = annotationInfo.constantValue;
 
-    if (directiveInfo.hasErrors) {
+    if (annotationInfo.hasErrors) {
       _exceptionHandler.handle(AngularAnalysisError(
-          directiveInfo.constantEvaluationErrors, directiveInfo));
+          annotationInfo.constantEvaluationErrors, annotationInfo));
       return null;
     }
 
     // Some directives won't have templates but the template parser is going to
     // assume they have at least defaults.
     CompileTypeMetadata componentType = element.accept(
-        CompileTypeMetadataVisitor(_library, _exceptionHandler, directiveInfo));
+        CompileTypeMetadataVisitor(
+            _library, _exceptionHandler, annotationInfo));
 
-    final template = isComponent
-        ? _createTemplateMetadata(directiveInfo, componentType)
+    final template = isComp
+        ? _createTemplateMetadata(annotationValue, componentType)
         : CompileTemplateMetadata();
-
-    // _createTemplateMetadata failed to create the metadata.
-    if (template == null) return null;
-
     final analyzedClass =
         AnalyzedClass(element, isMockLike: _implementsNoSuchMethod);
     final lifecycleHooks = extractLifecycleHooks(element);
-    _validateLifecycleHooks(lifecycleHooks, element, isComponent);
-
-    final selector = coerceString(annotationValue, 'selector');
-    if (selector == null || selector.isEmpty) {
-      _exceptionHandler.handle(ErrorMessageForAnnotation(
-        directiveInfo,
-        'Selector is required, got "$selector"',
-      ));
-    }
-
-    var changeDetection = _changeDetection(element, annotationValue);
-
-    final isComponentState = $ComponentState.isAssignableFrom(element);
-    if (isComponentState) {
-      if (!isComponent) {
-        _exceptionHandler.handle(ErrorMessageForElement(
-            element, 'Directives cannot implement or use ComponentState'));
-      }
-      changeDetection = ChangeDetectionStrategy.OnPush;
-    }
-
-    final isChangeDetectionLink = linkInfo != null;
-    if (isChangeDetectionLink &&
-        !(isComponent && changeDetection == ChangeDetectionStrategy.OnPush)) {
-      _exceptionHandler.handle(ErrorMessageForAnnotation(linkInfo,
-          'Only supported on components that use "OnPush" change detection'));
-    }
-
-    return CompileDirectiveMetadata(
-      type: componentType,
-      isLegacyComponentState: isComponentState,
-      originType: componentType,
-      metadataType: isComponent
-          ? CompileDirectiveMetadataType.Component
-          : CompileDirectiveMetadataType.Directive,
-      selector: coerceString(annotationValue, 'selector'),
-      exportAs: coerceString(annotationValue, 'exportAs'),
-      changeDetection: changeDetection,
-      inputs: _inputs,
-      inputTypes: _inputTypes,
-      outputs: _outputs,
-      hostBindings: _hostBindings,
-      hostListeners: _hostListeners,
-      analyzedClass: analyzedClass,
-      lifecycleHooks: lifecycleHooks,
-      providers: _extractProviders(directiveInfo, 'providers'),
-      viewProviders: _extractProviders(directiveInfo, 'viewProviders'),
-      exports: _extractExports(annotation as ElementAnnotationImpl, element),
-      queries: _queries,
-      viewQueries: _viewQueries,
-      template: template,
-      visibility: coerceEnum(
-        annotationValue,
-        _visibilityProperty,
-        Visibility.values,
-        defaultTo: Visibility.local,
-      ),
-      isChangeDetectionLink: isChangeDetectionLink,
-    );
-  }
-
-  void _validateLifecycleHooks(
-      List<LifecycleHooks> lifecycleHooks, ClassElement element, bool isComp) {
     if (lifecycleHooks.contains(LifecycleHooks.doCheck)) {
       final ngDoCheck = element.getMethod('ngDoCheck') ??
           element.lookUpInheritedMethod('ngDoCheck', element.library);
@@ -702,44 +607,67 @@ class _ComponentVisitor
             '(or getters/setters) that directly run asynchronous code (such as '
             'microtasks, timers).'));
       }
+      if (lifecycleHooks.contains(LifecycleHooks.onChanges)) {
+        _exceptionHandler.handle(ErrorMessageForElement(
+            element,
+            'Cannot implement both the DoCheck and OnChanges lifecycle '
+            'events. By implementing "DoCheck", default change detection of '
+            'inputs is disabled, meaning that "ngOnChanges" will never be '
+            'invoked with values. Consider "AfterChanges" instead.'));
+      }
     }
+
+    final selector = coerceString(annotationValue, 'selector');
+    if (selector == null || selector.isEmpty) {
+      _exceptionHandler.handle(ErrorMessageForAnnotation(
+        annotationInfo,
+        'Selector is required, got "$selector"',
+      ));
+    }
+
+    return CompileDirectiveMetadata(
+      type: componentType,
+      originType: componentType,
+      metadataType: isComp
+          ? CompileDirectiveMetadataType.Component
+          : CompileDirectiveMetadataType.Directive,
+      selector: coerceString(annotationValue, 'selector'),
+      exportAs: coerceString(annotationValue, 'exportAs'),
+      // Even for directives, we want change detection set to the default.
+      changeDetection:
+          _changeDetection(element, annotationValue, 'changeDetection'),
+      inputs: _inputs,
+      inputTypes: _inputTypes,
+      outputs: _outputs,
+      hostBindings: _hostBindings,
+      hostListeners: _hostListeners,
+      analyzedClass: analyzedClass,
+      lifecycleHooks: lifecycleHooks,
+      providers: _extractProviders(annotationInfo, 'providers'),
+      viewProviders: _extractProviders(annotationInfo, 'viewProviders'),
+      exports: _extractExports(annotation as ElementAnnotationImpl, element),
+      queries: _queries,
+      viewQueries: _viewQueries,
+      template: template,
+      visibility: coerceEnum(
+        annotationValue,
+        _visibilityProperty,
+        Visibility.values,
+        defaultTo: Visibility.local,
+      ),
+    );
   }
 
   CompileTemplateMetadata _createTemplateMetadata(
-    AnnotationInformation annotationInfo,
-    CompileTypeMetadata componentType,
-  ) {
-    final DartObject component = annotationInfo.constantValue;
+      DartObject component, CompileTypeMetadata componentType) {
     var template = component;
     String templateContent = coerceString(template, 'template');
     String templateUrl = coerceString(template, 'templateUrl');
     if (templateContent != null && templateUrl != null) {
-      _exceptionHandler.handle(ErrorMessageForAnnotation(annotationInfo,
-          'Cannot supply both "template" and "templateUrl" for an @Component'));
-      return null;
-    }
-    // Verify that templateUrl can be parsed.
-    if (templateUrl != null) {
-      try {
-        Uri.parse(templateUrl);
-      } on FormatException catch (formatException) {
-        _exceptionHandler.handle(ErrorMessageForAnnotation(
-            annotationInfo,
-            '@Component.templateUrl is not a valid URI. '
-            'Parsing produced an error: ${formatException.message}'));
-        return null;
-      }
-    }
-    final styleUrls = coerceStringList(template, 'styleUrls');
-    for (final styleUrl in styleUrls) {
-      if (!p.extension(styleUrl).endsWith('.css')) {
-        _exceptionHandler.handle(
-          ErrorMessageForAnnotation(
-            annotationInfo,
-            'Unsupported extension in styleUrls: "$styleUrl". Only ".css" is supported',
-          ),
-        );
-      }
+      // TODO: https://github.com/dart-lang/angular/issues/851.
+      log.severe(''
+          'Component "${componentType.name}" in\n  ${componentType.moduleUrl}:\n'
+          '  Cannot supply both "template" and "templateUrl"');
     }
     return CompileTemplateMetadata(
       encapsulation: _encapsulation(template),
@@ -762,12 +690,17 @@ class _ComponentVisitor
         defaultTo: ViewEncapsulation.Emulated,
       );
 
-  int _changeDetection(ClassElement clazz, DartObject value) {
-    return coerceInt(
-      value,
-      'changeDetection',
-      defaultTo: ChangeDetectionStrategy.Default,
-    );
+  int _changeDetection(
+    ClassElement clazz,
+    DartObject value,
+    String field,
+  ) {
+    // TODO: Use angular2/src/meta instead of this error-prone check.
+    if (clazz.allSupertypes.any((t) => t.name == 'ComponentState')) {
+      // TODO: Warn/fail if changeDetection: ... is set to anything else.
+      return ChangeDetectionStrategy.Stateful;
+    }
+    return coerceInt(value, field, defaultTo: ChangeDetectionStrategy.Default);
   }
 
   List<CompileProviderMetadata> _extractProviders(
@@ -797,7 +730,7 @@ class _ComponentVisitor
       return exports;
     }
 
-    var staticNames = (exportsArg.expression as ListLiteral).elements;
+    var staticNames = (exportsArg.expression as ListLiteral).elements2;
     if (!staticNames.every((name) => name is Identifier)) {
       log.severe('Every item in the "exports" field must be an identifier');
       return exports;

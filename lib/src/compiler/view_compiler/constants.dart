@@ -2,15 +2,25 @@ import "../compile_metadata.dart" show CompileIdentifierMetadata;
 import "../identifiers.dart";
 import "../output/output_ast.dart" as o;
 
-/// The name of the `ComponentView` field that stores its root element.
-const componentViewRootElementFieldName = 'rootElement';
-
-/// The name of the `HostView` field that stores the hosted component instance.
-const hostViewComponentFieldName = 'component';
-
+const String appViewRootElementName = 'rootEl';
 const classAttrName = 'class';
 const styleAttrName = 'style';
 final parentRenderNodeVar = o.variable('parentRenderNode');
+
+o.Expression createEnumExpression(
+  CompileIdentifierMetadata classIdentifier,
+  Object value,
+) {
+  if (value == null) {
+    return o.NULL_EXPR;
+  }
+  final enumStr = value.toString();
+  final name = enumStr.substring(enumStr.lastIndexOf('.') + 1);
+  return o.importExpr(CompileIdentifierMetadata(
+    name: '${classIdentifier.name}.$name',
+    moduleUrl: classIdentifier.moduleUrl,
+  ));
+}
 
 const List<String> _changeDetectionStrategies = [
   'Default',
@@ -19,6 +29,7 @@ const List<String> _changeDetectionStrategies = [
   'CheckAlways',
   'Detached',
   'OnPush',
+  'Stateful'
 ];
 
 /// Converts value of a `ChangeDetectionStrategy` to refer to the static field.
@@ -59,6 +70,7 @@ class InjectMethodVars {
 
 class DetectChangesVars {
   static final cachedCtx = o.variable('_ctx');
+  static final changes = o.variable('changes');
   static final changed = o.variable('changed');
   static final firstCheck = o.variable('firstCheck');
   static final internalSetStateChanged = o.importExpr(
@@ -67,15 +79,4 @@ class DetectChangesVars {
         moduleUrl: 'asset:angular/lib/src/core/'
             'change_detection/component_state.dart'),
   );
-}
-
-class Lifecycles {
-  static final afterChanges = 'ngAfterChanges';
-  static final onInit = 'ngOnInit';
-  static final doCheck = 'ngDoCheck';
-  static final afterContentInit = 'ngAfterContentInit';
-  static final afterContentChecked = 'ngAfterContentChecked';
-  static final afterViewInit = 'ngAfterViewInit';
-  static final afterViewChecked = 'ngAfterViewChecked';
-  static final onDestroy = 'ngOnDestroy';
 }

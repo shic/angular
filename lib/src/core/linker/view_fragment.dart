@@ -53,7 +53,10 @@ class ViewFragment {
         if (nestedViews != null) {
           final length = nestedViews.length;
           for (var n = 0; n < length; n++) {
-            nestedViews[n].viewFragment.appendDomNodesInto(target);
+            appendDomNodes(
+              target,
+              nestedViews[n].viewData.rootFragment._nodesOrViewContainers,
+            );
           }
         }
       } else {
@@ -86,7 +89,8 @@ class ViewFragment {
     // As an optimization (?) `nestedViews` may be `null` instead of empty.
     if (nestedViews != null) {
       for (var i = nestedViews.length - 1; i >= 0; i--) {
-        return nestedViews[i].lastRootNode;
+        final nodes = nestedViews[i].viewData.rootFragment;
+        return nodes.findLastDomNode();
       }
     }
 
@@ -113,7 +117,7 @@ class ViewFragment {
           for (var n = 0; n < length; n++) {
             _flattenDomNodes(
               target,
-              nestedViews[n].viewFragment._nodesOrViewContainers,
+              nestedViews[n].viewData.rootFragment._nodesOrViewContainers,
             );
           }
         }

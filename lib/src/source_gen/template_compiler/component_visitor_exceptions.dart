@@ -2,6 +2,7 @@ import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/error/error.dart';
+import 'package:analyzer/src/dart/analysis/results.dart';
 import 'package:source_span/source_span.dart';
 import 'package:angular/src/compiler/compile_metadata.dart';
 import 'package:angular/src/source_gen/common/annotation_matcher.dart';
@@ -45,8 +46,9 @@ class ComponentVisitorExceptionHandler {
 
 Future<ElementDeclarationResult> _resolvedClassResult(Element element) async {
   var libraryElement = element.library;
-  var libraryResult =
-      await libraryElement.session.getResolvedLibraryByElement(libraryElement);
+  // We are intentionally using this until we are migrated by the analyzer team.
+  // ignore: deprecated_member_use
+  var libraryResult = await ResolvedLibraryResultImpl.tmp(libraryElement);
   if (libraryResult.state == ResultState.NOT_A_FILE) {
     // We don't have access to source information in summarized libraries,
     // but another build step will likely emit the root cause errors.
@@ -203,9 +205,8 @@ class UnusedDirectiveTypeError extends ErrorMessageForAnnotation {
 
   static IndexedAnnotation firstComponentAnnotation(ClassElement element) {
     final index = element.metadata.indexWhere(isComponent);
-    if (index == -1) {
+    if (index == -1)
       throw ArgumentError("[element] must have a @Component annotation");
-    }
     return IndexedAnnotation(element, element.metadata[index], index);
   }
 

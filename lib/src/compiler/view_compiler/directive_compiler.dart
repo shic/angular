@@ -1,9 +1,16 @@
-import 'package:angular/src/compiler/identifiers.dart';
-import 'package:angular/src/compiler/ir/model.dart' as ir;
-import 'package:angular/src/compiler/output/convert.dart'
-    show typeArgumentsFrom;
-import 'package:angular/src/compiler/output/output_ast.dart' as o;
+import 'package:source_span/source_span.dart';
+import 'package:angular/src/core/change_detection/change_detection.dart'
+    show ChangeDetectorState;
+import 'package:angular_compiler/cli.dart';
 
+import '../identifiers.dart';
+import '../ir/model.dart' as ir;
+import '../output/convert.dart' show typeArgumentsFrom;
+import '../output/output_ast.dart' as o;
+import '../parse_util.dart' show ParseErrorLevel;
+import '../schema/element_schema_registry.dart' show ElementSchemaRegistry;
+import '../template_ast.dart' show BoundExpression;
+import '../template_parser.dart';
 import 'bound_value_converter.dart';
 import 'compile_method.dart';
 import 'compile_view.dart' show CompileViewStorage, NodeReference;
@@ -19,7 +26,16 @@ class DirectiveCompileResult {
 }
 
 class DirectiveCompiler {
+  final ElementSchemaRegistry _schemaRegistry;
+
+  static final _emptySpan = SourceSpan(
+    SourceLocation(0),
+    SourceLocation(0),
+    '',
+  );
   static final _implicitReceiver = o.ReadClassMemberExpr('instance');
+
+  DirectiveCompiler(this._schemaRegistry);
 
   DirectiveCompileResult compile(ir.Directive directive) {
     assert(directive.requiresDirectiveChangeDetector);
@@ -70,16 +86,41 @@ class DirectiveCompiler {
       directive.metadata.type.identifier,
       typeArgumentsFrom(directive.typeParameters),
     );
-    storage.allocate(
+    final instance = storage.allocate(
       'instance',
       outputType: instanceType,
       modifiers: [
         o.StmtModifier.Final,
       ],
     );
+    final statements = <o.Statement>[];
+    if (_implementsOnChangesLifecycle(directive) ||
+        _implementsComponentState(directive)) {
+      final setDirective = o.WriteClassMemberExpr(
+        'directive',
+        storage.buildReadExpr(instance),
+      );
+      statements.add(setDirective.toStmt());
+    }
     final constructorArgs = [o.FnParam('this.instance')];
-    return o.Constructor(params: constructorArgs);
+    if (_implementsComponentState(directive)) {
+      constructorArgs
+        ..add(o.FnParam('v', o.importType(Identifiers.AppView)))
+        ..add(o.FnParam('e', o.importType(Identifiers.HTML_ELEMENT)));
+      statements.addAll([
+        o.WriteClassMemberExpr('view', o.ReadVarExpr('v')).toStmt(),
+        el.toWriteStmt(o.ReadVarExpr('e')),
+        o.InvokeMemberMethodExpr('initCd', const []).toStmt()
+      ]);
+    }
+    return o.Constructor(params: constructorArgs, body: statements);
   }
+
+  static bool _implementsOnChangesLifecycle(ir.Directive directive) =>
+      directive.implementsOnChanges;
+
+  static bool _implementsComponentState(ir.Directive directive) =>
+      directive.implementsComponentState;
 
   List<o.ClassMethod> _buildDetectHostChanges(
     ir.Directive directive,
@@ -87,10 +128,24 @@ class DirectiveCompiler {
     CompileViewStorage storage,
     NodeReference el,
   ) {
-    final hostProperties = directive.hostProperties;
-    if (hostProperties.isEmpty) {
+    final hostProps = directive.hostProperties;
+    if (hostProps.isEmpty) {
       return [];
     }
+    const securityContextElementName = 'div';
+
+    final hostProperties = hostProps.entries.map((entry) {
+      final property = entry.key;
+      final expression = entry.value;
+      return createElementPropertyAst(
+        securityContextElementName,
+        property,
+        BoundExpression(expression),
+        _emptySpan,
+        _schemaRegistry,
+        _reportError,
+      );
+    }).toList();
 
     final CompileMethod method = CompileMethod();
 
@@ -124,22 +179,43 @@ class DirectiveCompiler {
   /// Determines whether this is the first time the view was checked for change.
   static final _firstCheckVarStmt = o.DeclareVarStmt(
     DetectChangesVars.firstCheck.name,
-    o.variable('view').prop('firstCheck'),
+    o
+        .variable('view')
+        .prop('cdState')
+        .equals(o.literal(ChangeDetectorState.NeverChecked)),
     o.BOOL_TYPE,
   );
 
   static o.ClassMethod _detectHostChanges(List<o.Statement> statements) {
-    // We create a method that can detect a host RenderView/rootElement.
+    // We create a method that can detect a host AppView/rootElement.
     //
-    // void detectHostChanges(RenderView view, Element el) { ... }
+    // void detectHostChanges(AppView<dynamic> view, Element el) { ... }
     return o.ClassMethod(
       'detectHostChanges',
       [
-        o.FnParam('view', o.importType(Views.renderView)),
-        o.FnParam('el', o.importType(Identifiers.HTML_ELEMENT)),
+        o.FnParam(
+          'view',
+          o.importType(Identifiers.AppView, [o.DYNAMIC_TYPE]),
+        ),
+        o.FnParam(
+          'el',
+          o.importType(Identifiers.HTML_ELEMENT),
+        ),
       ],
       statements,
     );
+  }
+
+  static void _reportError(
+    String message,
+    SourceSpan sourceSpan, [
+    ParseErrorLevel level,
+  ]) {
+    if (level == ParseErrorLevel.FATAL) {
+      throwFailure(message);
+    } else {
+      logWarning(message);
+    }
   }
 }
 

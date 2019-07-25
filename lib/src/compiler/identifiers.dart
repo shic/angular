@@ -3,6 +3,7 @@ import "compile_metadata.dart"
 
 const _angularLib = 'asset:angular/lib';
 
+const _appViewModuleUrl = "$_angularLib/src/core/linker/app_view.dart";
 const _appViewUtilsModuleUrl =
     "$_angularLib/src/core/linker/app_view_utils.dart";
 const _interpolateModuleUrl = '$_angularLib/src/runtime/interpolate.dart';
@@ -16,7 +17,7 @@ const _ngForUrl = "$_angularLib/src/common/directives/ng_for.dart";
 const _profileRuntimeModuleUrl = "$_angularLib/src/debug/profile_runtime.dart";
 const _runtimeUtilsModuleUrl = "$_angularLib/src/runtime.dart";
 const _textBindingModuleUrl = "$_angularLib/src/runtime/text_binding.dart";
-const _debugInjectorModuleUrl = '$_angularLib/src/di/errors.dart';
+final _debugInjectorModuleUrl = '$_angularLib/src/di/errors.dart';
 
 /// A collection of methods for manipulating the DOM from generated code.
 class DomHelpers {
@@ -61,26 +62,11 @@ class StyleEncapsulation {
   static final componentStylesUnscoped = _of('ComponentStyles.unscoped');
 }
 
-class Views {
-  const Views._();
-
-  static CompileIdentifierMetadata _of(String name, String file) {
-    return CompileIdentifierMetadata(
-      name: name,
-      moduleUrl: '$_angularLib/src/core/linker/views/$file',
-    );
-  }
-
-  static final componentView = _of('ComponentView', 'component_view.dart');
-  static final embeddedView = _of('EmbeddedView', 'embedded_view.dart');
-  static final hostView = _of('HostView', 'host_view.dart');
-  static final renderView = _of('RenderView', 'render_view.dart');
-  static final view = _of('View', 'view.dart');
-}
-
 class Identifiers {
   static final appViewUtils = CompileIdentifierMetadata(
       name: "appViewUtils", moduleUrl: _appViewUtilsModuleUrl);
+  static final AppView =
+      CompileIdentifierMetadata(name: "AppView", moduleUrl: _appViewModuleUrl);
   static final ViewContainer = CompileIdentifierMetadata(
       name: "ViewContainer",
       moduleUrl: "asset:angular/lib/src/core/linker/view_container.dart");
@@ -110,23 +96,41 @@ class Identifiers {
       name: 'DirectiveChangeDetector',
       moduleUrl: 'asset:angular/lib/src/core/'
           'change_detection/directive_change_detector.dart');
+  static final RenderComponentType = CompileIdentifierMetadata(
+      name: "RenderComponentType",
+      moduleUrl: "asset:angular/lib/src/core/render/api.dart");
   static final ComponentRef = CompileIdentifierMetadata(
       name: "ComponentRef", moduleUrl: _angularRootUrl);
   static final TemplateRef = CompileIdentifierMetadata(
       name: "TemplateRef",
       moduleUrl: "asset:angular/lib/src/core/linker/template_ref.dart");
   static final TemplateRefToken = identifierToken(Identifiers.TemplateRef);
+  static final ValueUnwrapper = CompileIdentifierMetadata(
+      name: "ValueUnwrapper", moduleUrl: _cdModuleUrl);
   static final Injector = CompileIdentifierMetadata(
       name: "Injector",
       moduleUrl: 'asset:angular/lib/src/di/injector/injector.dart');
   static final InjectorToken = identifierToken(Identifiers.Injector);
+  static final ViewEncapsulation = CompileIdentifierMetadata(
+      name: "ViewEncapsulation", moduleUrl: _angularRootUrl);
   static final ViewType = CompileIdentifierMetadata(
       name: "ViewType",
       moduleUrl: 'asset:angular/lib/src/core/linker/view_type.dart');
   static final ChangeDetectionStrategy = CompileIdentifierMetadata(
       name: "ChangeDetectionStrategy", moduleUrl: _cdModuleUrl);
+  static final TemplateSecurityContext = CompileIdentifierMetadata(
+      name: 'TemplateSecurityContext',
+      moduleUrl: 'asset:angular/lib/src/core/security.dart');
+  static final SimpleChange =
+      CompileIdentifierMetadata(name: "SimpleChange", moduleUrl: _cdModuleUrl);
+  static final ChangeDetectorState = CompileIdentifierMetadata(
+      name: "ChangeDetectorState", moduleUrl: _cdModuleUrl);
   static final checkBinding = CompileIdentifierMetadata(
-      name: "checkBinding", moduleUrl: _runtimeUtilsModuleUrl);
+      name: "checkBinding", moduleUrl: _appViewUtilsModuleUrl);
+  static final createText = CompileIdentifierMetadata(
+      name: "createText", moduleUrl: _appViewModuleUrl);
+  static final devModeEqual =
+      CompileIdentifierMetadata(name: "devModeEqual", moduleUrl: _cdModuleUrl);
   static final identical = CompileIdentifierMetadata(name: "identical");
   static final profileSetup = CompileIdentifierMetadata(
       name: "profileSetup", moduleUrl: _profileRuntimeModuleUrl);
@@ -134,10 +138,9 @@ class Identifiers {
       name: "profileMarkStart", moduleUrl: _profileRuntimeModuleUrl);
   static final profileMarkEnd = CompileIdentifierMetadata(
       name: "profileMarkEnd", moduleUrl: _profileRuntimeModuleUrl);
-  static final loadDeferred = CompileIdentifierMetadata(
-      name: "loadDeferred", moduleUrl: _appViewUtilsModuleUrl);
-  static final debugThrowIfChanged = CompileIdentifierMetadata(
-      name: "debugThrowIfChanged", moduleUrl: _runtimeUtilsModuleUrl);
+
+  static final throwOnChanges = CompileIdentifierMetadata(
+      name: "AppViewUtils.throwOnChanges", moduleUrl: _appViewUtilsModuleUrl);
   static final isDevMode = CompileIdentifierMetadata(
       name: "isDevMode", moduleUrl: _runtimeUtilsModuleUrl);
   static final unsafeCast = CompileIdentifierMetadata(
@@ -291,6 +294,8 @@ class Identifiers {
       name: "TableColElement", moduleUrl: "dart:html");
   static final HTML_ULIST_ELEMENT =
       CompileIdentifierMetadata(name: "UListElement", moduleUrl: "dart:html");
+  static final HTML_EVENT =
+      CompileIdentifierMetadata(name: "Event", moduleUrl: "dart:html");
   static final HTML_NODE =
       CompileIdentifierMetadata(name: "Node", moduleUrl: "dart:html");
 

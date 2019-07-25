@@ -1,14 +1,16 @@
 import 'dart:async';
+import 'dart:html';
 
 import 'package:meta/meta.dart';
 import 'package:meta/dart2js.dart' as dart2js;
 
 import 'package:angular/src/runtime.dart';
-import 'package:angular/src/core/linker/views/view.dart';
+import 'package:angular/src/core/linker/app_view.dart';
 
 import 'change_detection.dart';
+import 'constants.dart';
 
-/// A host for tracking the current application.
+/// A host for tracking the current application and stateful components.
 ///
 /// This is expected to the base class for an `ApplicationRef`, and eventually
 /// could be merged in directly to avoid having inheritance if necessary. For
@@ -21,7 +23,7 @@ abstract class ChangeDetectionHost {
   static bool get checkForCrashes => _current?._lastGuardedView != null;
 
   /// **INTERNAL ONLY**: Register a crash during [view.detectCrash].
-  static void handleCrash(View view, Object error, StackTrace trace) {
+  static void handleCrash(AppView<void> view, Object error, StackTrace trace) {
     final current = _current;
     assert(current != null);
     current
@@ -30,11 +32,30 @@ abstract class ChangeDetectionHost {
       .._lastCaughtTrace = trace;
   }
 
+  /// **INTERNAL ONLY**: Registers a [callback] to execute change detection.
+  ///
+  /// This is used as an alternative to the "automatic" change detection of
+  /// [tick] for components that prefer _telling_ AngularDart that their state
+  /// is invalidated (i.e. `ComponentState`).
+  static void scheduleViewUpdate(
+    void Function(AppView<void>, Element) callback,
+    AppView<void> view,
+    Element host,
+  ) {
+    // Directives or components that have crashed are no longer checked.
+    if (view.cdState == ChangeDetectorState.Errored) {
+      return;
+    }
+    final current = _current;
+    assert(current != null, 'No current ChangeDetectionHost in context');
+    current._scheduleViewUpdate(callback, view, host);
+  }
+
   /// If a crash is detected during zone-based change detection, then this view
   /// is set (non-null). Change detection is re-run (synchronously) in a
   /// slow-mode that individually checks component, and disables change
   /// detection for them if there is failure detected.
-  View _lastGuardedView;
+  AppView<void> _lastGuardedView;
 
   /// An exception caught for [_lastGuardedView], if any.
   Object _lastCaughtException;
@@ -55,6 +76,48 @@ abstract class ChangeDetectionHost {
   /// Removes a change [detector] from this host (no longer checked).
   void unregisterChangeDetector(ChangeDetectorRef detector) {
     _changeDetectors.remove(detector);
+  }
+
+  // The reason for having 3 lists instead of a single class is to reduce GC.
+  final List<void Function(AppView<void>, Element)> _scheduledCallbacks = [];
+  final List<AppView<void>> _scheduledViews = [];
+  final List<Element> _scheduledElements = [];
+
+  void _scheduleViewUpdate(
+    void Function(AppView<void>, Element) callback,
+    AppView<void> view,
+    Element host,
+  ) {
+    final callbacks = _scheduledCallbacks;
+    final views = _scheduledViews;
+    final elements = _scheduledElements;
+    if (callbacks.isEmpty) {
+      scheduleMicrotask(_runViewUpdates);
+    }
+    callbacks.add(callback);
+    views.add(view);
+    elements.add(host);
+  }
+
+  void _runViewUpdates() {
+    final callbacks = _scheduledCallbacks;
+    final views = _scheduledViews;
+    final elements = _scheduledElements;
+    assert(callbacks.isNotEmpty, 'Expected at least one update');
+    for (var i = 0, l = callbacks.length; i < l; i++) {
+      final callback = callbacks[i];
+      final view = views[i];
+      final host = elements[i];
+      try {
+        callback(view, host);
+      } catch (e, s) {
+        reportViewException(view, e, s);
+        rethrow;
+      }
+    }
+    callbacks.clear();
+    views.clear();
+    elements.clear();
   }
 
   /// Runs a change detection pass on all registered root components.
@@ -101,11 +164,9 @@ abstract class ChangeDetectionHost {
       detectors[i].detectChanges();
     }
     if (isDevMode) {
-      debugEnterThrowOnChanged();
       for (var i = 0; i < length; i++) {
-        detectors[i].detectChanges();
+        detectors[i].checkNoChanges();
       }
-      debugExitThrowOnChanged();
     }
   }
 
@@ -121,7 +182,8 @@ abstract class ChangeDetectionHost {
     final length = detectors.length;
     for (var i = 0; i < length; i++) {
       final detector = detectors[i];
-      if (detector is View) {
+      // TODO(b/129723738): don't use <dynamic> when alternatives optimize well
+      if (detector is AppView<dynamic>) {
         final view = detector;
         _lastGuardedView = view;
         view.detectChanges();
@@ -153,11 +215,11 @@ abstract class ChangeDetectionHost {
   /// Disables the [view] as an error, and forwards to [reportException].
   @dart2js.noInline
   void reportViewException(
-    View view,
+    AppView<void> view,
     Object error, [
     StackTrace trace,
   ]) {
-    view.disableChangeDetection();
+    view.cdState = ChangeDetectorState.Errored;
     handleUncaughtException(error, trace);
   }
 

@@ -2,9 +2,11 @@ import 'package:collection/collection.dart';
 
 import '../core/change_detection/change_detection.dart'
     show ChangeDetectionStrategy;
+import '../core/metadata/lifecycle_hooks.dart' show LifecycleHooks;
 import '../core/metadata/view.dart';
 import '../core/metadata/visibility.dart';
 import 'analyzed_class.dart';
+import 'compiler_utils.dart';
 import 'expression_parser/ast.dart' as ast;
 import 'output/convert.dart' show typeArgumentsFrom;
 import 'output/output_ast.dart' as o;
@@ -211,11 +213,8 @@ class CompileTokenMetadata implements CompileMetadataWithIdentifier {
   }
 
   String get name {
-    return value != null ? _sanitizeIdentifier(value) : identifier?.name;
+    return value != null ? sanitizeIdentifier(value) : identifier?.name;
   }
-
-  static String _sanitizeIdentifier(Object name) =>
-      name.toString().replaceAll(RegExp(r'\W'), "_");
 
   @override
   // ignore: hash_and_equals
@@ -237,7 +236,9 @@ class CompileTokenMetadata implements CompileMetadataWithIdentifier {
 }
 
 class CompileTokenMap<V> {
-  final _valueMap = <dynamic, V>{};
+  final _valueMap = Map<dynamic, V>();
+  final List<V> _values = [];
+  final List<CompileTokenMetadata> _tokens = [];
 
   void add(CompileTokenMetadata token, V value) {
     var existing = get(token);
@@ -245,6 +246,8 @@ class CompileTokenMap<V> {
       throw StateError(
           'Add failed. Token already exists. Token: ${token.name}');
     }
+    _tokens.add(token);
+    _values.add(value);
     var ak = token.assetCacheKey;
     if (ak != null) {
       _valueMap[ak] = value;
@@ -258,9 +261,11 @@ class CompileTokenMap<V> {
 
   bool containsKey(CompileTokenMetadata token) => get(token) != null;
 
-  List<V> get values => _valueMap.values.toList();
+  List<CompileTokenMetadata> get keys => _tokens;
 
-  int get length => _valueMap.length;
+  List<V> get values => _values;
+
+  int get size => _values.length;
 }
 
 /// Metadata regarding compilation of a type.
@@ -432,9 +437,6 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
   @override
   final CompileTypeMetadata type;
 
-  /// Directive extends or mixes-in `ComponentState`.
-  final bool isLegacyComponentState;
-
   /// User-land class where the component annotation originated.
   final CompileTypeMetadata originType;
 
@@ -455,16 +457,13 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
   final List<CompileQueryMetadata> viewQueries;
   final CompileTemplateMetadata template;
   final AnalyzedClass analyzedClass;
+  bool _requiresDirectiveChangeDetector;
 
   /// Restricts where the directive is injectable.
   final Visibility visibility;
 
-  /// Whether this is an `OnPush` component that also works in a `Default` app.
-  final bool isChangeDetectionLink;
-
   CompileDirectiveMetadata({
     this.type,
-    this.isLegacyComponentState = false,
     this.originType,
     this.metadataType,
     this.selector,
@@ -484,13 +483,11 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
     this.exports = const [],
     this.queries = const [],
     this.viewQueries = const [],
-    this.isChangeDetectionLink = false,
   });
 
   CompileDirectiveMetadata.from(CompileDirectiveMetadata other,
       {AnalyzedClass analyzedClass})
       : this.type = other.type,
-        this.isLegacyComponentState = other.isLegacyComponentState,
         this.originType = other.originType,
         this.metadataType = other.metadataType,
         this.selector = other.selector,
@@ -509,20 +506,10 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
         this.viewProviders = other.viewProviders,
         this.exports = other.exports,
         this.queries = other.queries,
-        this.viewQueries = other.viewQueries,
-        this.isChangeDetectionLink = other.isChangeDetectionLink;
+        this.viewQueries = other.viewQueries;
 
   @override
   CompileIdentifierMetadata get identifier => type;
-
-  String toPrettyString() {
-    String name = type.name;
-    if (name.endsWith('Host')) {
-      name = name.substring(0, name.length - 4);
-    }
-    return '$name in ${type.moduleUrl} '
-        '(changeDetection: ${ChangeDetectionStrategy.toPrettyString(changeDetection)})';
-  }
 
   bool get isComponent =>
       metadataType == CompileDirectiveMetadataType.Component;
@@ -532,9 +519,15 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
   /// [DirectiveChangeDetector] classes should only be generated if they
   /// reduce the amount of duplicate code. Therefore we check for the presence
   /// of host bindings to move from each call site to a single method.
-  bool get requiresDirectiveChangeDetector =>
-      metadataType == CompileDirectiveMetadataType.Directive &&
-      hostProperties.isNotEmpty;
+  bool get requiresDirectiveChangeDetector {
+    if (_requiresDirectiveChangeDetector == null) {
+      _requiresDirectiveChangeDetector =
+          metadataType == CompileDirectiveMetadataType.Directive &&
+              identifier.name != 'NgIf' &&
+              hostProperties.isNotEmpty;
+    }
+    return _requiresDirectiveChangeDetector;
+  }
 
   Map<String, ast.AST> _cachedHostAttributes;
   Map<String, ast.AST> _cachedHostProperties;
@@ -600,7 +593,6 @@ class CompileDirectiveMetadata implements CompileMetadataWithType {
 CompileDirectiveMetadata createHostComponentMeta(
     CompileTypeMetadata componentType,
     String componentSelector,
-    AnalyzedClass analyzedClass,
     bool preserveWhitespace) {
   var template =
       CssSelector.parse(componentSelector)[0].getMatchingElementTemplate();
@@ -618,7 +610,6 @@ CompileDirectiveMetadata createHostComponentMeta(
         styleUrls: const [],
         ngContentSelectors: const []),
     changeDetection: ChangeDetectionStrategy.Default,
-    analyzedClass: analyzedClass,
     inputs: const {},
     inputTypes: const {},
     outputs: const {},
@@ -666,24 +657,4 @@ class CompilePipeMetadata implements CompileMetadataWithType {
 
   @override
   CompileIdentifierMetadata get identifier => type;
-}
-
-/// Lifecycle hooks are guaranteed to be called in the following order:
-/// - `afterChanges` (if any bindings have been changed by the Angular framework),
-/// - `onInit` (after the first check only),
-/// - `doCheck`,
-/// - `afterContentInit`,
-/// - `afterContentChecked`,
-/// - `afterViewInit`,
-/// - `afterViewChecked`,
-/// - `onDestroy` (at the very end before destruction)
-enum LifecycleHooks {
-  onInit,
-  onDestroy,
-  doCheck,
-  afterChanges,
-  afterContentInit,
-  afterContentChecked,
-  afterViewInit,
-  afterViewChecked
 }

@@ -17,37 +17,18 @@ import 'src/di/injector/injector.dart';
 import 'src/runtime.dart';
 import 'src/runtime/dom_helpers.dart';
 
+export 'src/bootstrap/modules.dart' show bootstrapLegacyModule;
 export 'src/common/directives/ng_for_identity.dart' show NgForIdentity;
-export 'src/core/linker/component_factory.dart'
-    show debugUsesDefaultChangeDetection;
 export 'src/core/linker/component_resolver.dart' show typeToFactory;
-export 'src/core/metadata/change_detection_link.dart' show changeDetectionLink;
 export 'src/core/zone/ng_zone.dart' show longestPendingTimer, inAngularZone;
-export 'src/runtime/check_binding.dart' show debugCheckBindings;
 
-/// Create a root application [Injector].
-///
-/// Requires [userInjector] to provide app-level services or overrides:
-/// ```dart
-/// main() {
-///   var injector = rootInjector((parent) {
-///     return Injector.map({ /* ... */ }, parent);
-///   });
-/// }
-/// ```
-///
-/// **WARNING**: This API is not considered part of the stable API.
-Injector rootInjector(InjectorFactory userInjector) {
-  return appInjector(([parent]) => unsafeCast(userInjector(parent)));
-}
-
-/// Create a root (legacy, with `SlowComponentLoader`) application [Injector].
+/// Create a root (legacy, with `SlowComponentLoader`) application injector.
 ///
 /// Requires [userInjector] to provide app-level services or overrides:
 /// ```dart
 /// main() {
 ///   var injector = rootLegacyInjector((parent) {
-///     return Injector.map({ /* ... */ }, parent);
+///     return new Injector.map({ /* ... */ }, parent);
 ///   });
 /// }
 /// ```

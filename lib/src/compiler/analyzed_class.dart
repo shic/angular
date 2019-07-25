@@ -77,6 +77,9 @@ MethodElement _getMethod(AnalyzedClass clazz, String name) {
 // TODO(het): Make this work with chained expressions.
 /// Returns [true] if [expression] is immutable.
 bool isImmutable(ast.AST expression, AnalyzedClass analyzedClass) {
+  if (expression is ast.ASTWithSource) {
+    expression = (expression as ast.ASTWithSource).ast;
+  }
   if (expression is ast.LiteralPrimitive ||
       expression is ast.StaticRead ||
       expression is ast.EmptyExpr) {
@@ -132,10 +135,11 @@ bool isStaticSetter(String name, AnalyzedClass analyzedClass) {
 ///
 /// If the underlying method has any parameters, then assume one parameter of
 /// '$event'.
-ast.ASTWithSource rewriteTearOff(
-    ast.ASTWithSource original, AnalyzedClass analyzedClass) {
-  var unwrappedExpression = original.ast;
-
+ast.AST rewriteTearOff(ast.AST original, AnalyzedClass analyzedClass) {
+  var unwrappedExpression = original;
+  if (original is ast.ASTWithSource) {
+    unwrappedExpression = original.ast;
+  }
   if (unwrappedExpression is ast.PropertyRead) {
     // Find the method, either on "this." or "super.".
     final method = analyzedClass._classElement.type.lookUpInheritedMethod(
@@ -152,11 +156,9 @@ ast.ASTWithSource rewriteTearOff(
     // the call into "foo($event)".
     final positionalParameters = method.parameters.where((p) => !p.isNamed);
     if (positionalParameters.isEmpty) {
-      return ast.ASTWithSource.from(
-          original, _simpleMethodCall(unwrappedExpression));
+      return _simpleMethodCall(unwrappedExpression);
     } else {
-      return ast.ASTWithSource.from(
-          original, _complexMethodCall(unwrappedExpression));
+      return _complexMethodCall(unwrappedExpression);
     }
   }
   return original;
@@ -172,6 +174,9 @@ ast.AST _complexMethodCall(ast.PropertyRead propertyRead) =>
 
 /// Returns [true] if [expression] could be [null].
 bool canBeNull(ast.AST expression) {
+  if (expression is ast.ASTWithSource) {
+    expression = (expression as ast.ASTWithSource).ast;
+  }
   if (expression is ast.LiteralPrimitive ||
       expression is ast.EmptyExpr ||
       expression is ast.Interpolation) {

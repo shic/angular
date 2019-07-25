@@ -1,10 +1,7 @@
-import 'package:angular/src/runtime/optimizations.dart';
-
+import 'app_view.dart';
 import 'element_ref.dart';
 import 'view_container.dart';
 import 'view_ref.dart' show EmbeddedViewRef;
-import 'views/embedded_view.dart';
-import 'views/render_view.dart';
 
 /// Represents an Embedded Template that can be used to instantiate Embedded
 /// Views.
@@ -20,18 +17,15 @@ import 'views/render_view.dart';
 /// it to the View Container.
 class TemplateRef {
   final ViewContainer _viewContainer;
-  final EmbeddedView<void> Function(RenderView, int) _viewFactory;
+  final AppView<void> Function(AppView<Object>, int) _viewFactory;
 
   TemplateRef(this._viewContainer, this._viewFactory);
 
   /// Instantiates an instance of the provided template.
   EmbeddedViewRef createEmbeddedView() {
-    // The unsafe cast is necessary because a view container's parent may be any
-    // kind of view, but this method is only ever called when the parent view is
-    // a `RenderView`.
-    final parentView = unsafeCast<RenderView>(_viewContainer.parentView);
+    final parentView = _viewContainer.parentView;
     final view = _viewFactory(parentView, _viewContainer.index);
-    view.create();
+    view.create(parentView.ctx, parentView.viewData.projectedNodes);
     return view;
   }
 

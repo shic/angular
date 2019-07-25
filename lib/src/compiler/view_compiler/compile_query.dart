@@ -10,8 +10,6 @@ import 'ir/view_storage.dart';
 import "view_compiler_utils.dart"
     show getPropertyInView, replaceReadClassMemberInExpression;
 
-const _viewQueryNodeIndex = -1;
-
 class _QueryValues {
   /// Compiled template associated to [values] and embedded [templates].
   final CompileView view;
@@ -80,7 +78,7 @@ abstract class CompileQuery {
       storage,
       queryRoot,
       boundDirective,
-      nodeIndex: _viewQueryNodeIndex,
+      nodeIndex: 1,
       queryIndex: queryIndex,
     );
   }
@@ -320,7 +318,7 @@ class _ListCompileQuery extends CompileQuery {
     //
     // We can rename the properties after we decide to keep this code branch.
     String property;
-    if (nodeIndex == _viewQueryNodeIndex) {
+    if (nodeIndex == -1) {
       // @ViewChild[ren].
       property = '_viewQuery_${selector}_${queryIndex}_isDirty';
     } else {

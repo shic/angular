@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:meta/meta.dart';
 import 'package:angular/src/compiler/ir/model.dart' as ir;
+import 'package:angular/src/core/change_detection/change_detection.dart'
+    show ChangeDetectionStrategy, ChangeDetectorState;
 import 'package:angular/src/core/linker/view_type.dart' show ViewType;
 import "package:angular/src/core/metadata/view.dart" show ViewEncapsulation;
 import 'package:angular/src/source_gen/common/url_resolver.dart'
@@ -25,6 +27,7 @@ import '../template_ast.dart'
     show
         ElementAst,
         EmbeddedTemplateAst,
+        NgContentAst,
         ProviderAst,
         ProviderAstType,
         ReferenceAst,
@@ -36,13 +39,11 @@ import 'compile_pipe.dart' show CompilePipe;
 import 'compile_query.dart' show CompileQuery, addQueryToTokenMap;
 import 'constants.dart'
     show
+        parentRenderNodeVar,
+        appViewRootElementName,
         DetectChangesVars,
-        EventHandlerVars,
         ViewProperties,
-        InjectMethodVars,
-        componentViewRootElementFieldName,
-        hostViewComponentFieldName,
-        parentRenderNodeVar;
+        InjectMethodVars;
 import 'expression_converter.dart';
 import 'ir/provider_resolver.dart';
 import 'ir/view_storage.dart';
@@ -65,7 +66,7 @@ enum NodeReferenceVisibility {
   build, // Only visible inside DOM build process.
 }
 
-final notThrowOnChanges = o.not(o.importExpr(Identifiers.debugThrowIfChanged));
+final notThrowOnChanges = o.not(o.importExpr(Identifiers.throwOnChanges));
 
 /// A reference to an HTML, Text, or View node created during `AppView.build()`.
 class NodeReference {
@@ -119,10 +120,10 @@ class NodeReference {
         _initialValue = null;
 
   /// Create a [NodeReference] for the root element of a view.
-  NodeReference.rootElement()
+  NodeReference.appViewRoot()
       : _storage = null,
         _type = o.importType(Identifiers.HTML_ELEMENT),
-        _name = componentViewRootElementFieldName,
+        _name = appViewRootElementName,
         _visibility = NodeReferenceVisibility.classPublic,
         _initialValue = null;
 
@@ -133,11 +134,6 @@ class NodeReference {
 
   NodeReference._parameter(this._storage, this._type, this._name)
       : _initialValue = null;
-
-  NodeReference._subscription(this._name)
-      : _storage = null,
-        _type = null,
-        _initialValue = null;
 
   /// Returns an expression that reads from this variable or field.
   o.Expression toReadExpr() => ReadNodeReferenceExpr(this);
@@ -305,7 +301,7 @@ class AppViewReference {
   AppViewReference(this.parent, this.nodeIndex)
       : _name = '_compView_$nodeIndex';
 
-  o.ReadClassMemberExpr toReadExpr() {
+  o.Expression toReadExpr() {
     return o.ReadClassMemberExpr(_name);
   }
 
@@ -353,7 +349,7 @@ class CompileView {
 
   /// Contains references to view children so we can generate code for
   /// change detection and destroy.
-  final List<CompileElement> _viewChildren = [];
+  final List<o.Expression> _viewChildren = [];
 
   /// Flat list of all nodes inside the template including text nodes.
   List<CompileNode> nodes = [];
@@ -392,6 +388,8 @@ class CompileView {
   o.OutputType classType;
   o.Expression viewFactory;
   String viewFactoryName;
+  bool requiresOnChangesCall = false;
+  bool requiresAfterChangesCall = false;
   var pipeCount = 0;
   ViewNameResolver nameResolver;
   static final defaultDocVarName = 'doc';
@@ -462,12 +460,12 @@ class CompileView {
   }
 
   // Adds reference to a child view.
-  void addViewChild(CompileElement viewChild) {
-    _viewChildren.add(viewChild);
+  void addViewChild(o.Expression componentViewExpr) {
+    _viewChildren.add(componentViewExpr);
   }
 
   // Returns list of references to view children.
-  List<CompileElement> get viewChildren => _viewChildren;
+  List<o.Expression> get viewChildren => _viewChildren;
 
   void afterNodes() {
     for (var pipe in pipes) {
@@ -537,12 +535,10 @@ class CompileView {
         [o.StmtModifier.Static, o.StmtModifier.Private],
       );
       methods.add(method);
-      // A hack to invoke a static class method.
-      messageExpression = o.InvokeFunctionExpr(
-        o.ReadStaticMemberExpr(name),
+      messageExpression = o.InvokeMemberMethodExpr(
+        name,
         methodArgs,
-        [],
-        type: o.STRING_TYPE,
+        outputType: o.STRING_TYPE,
       );
     } else {
       // A message with no arguments is generated as a static final field.
@@ -680,7 +676,7 @@ class CompileView {
       return convertCdExpressionToIr(
         nameResolver,
         implicitReceiver,
-        source.expression.ast,
+        source.expression,
         source.sourceSpan,
         component,
         o.STRING_TYPE,
@@ -689,38 +685,6 @@ class CompileView {
       throw ArgumentError.value(source, 'source', 'Unsupported source type');
     }
   }
-
-  int _eventHandlerCount = 0;
-
-  // TODO(alorenzen): Convert to NodeReference.
-  o.Expression createEventHandler(List<o.Statement> stmts,
-      {List<o.Statement> localDeclarations = const []}) {
-    var methodName = '_handleEvent_${_eventHandlerCount++}';
-    methods.add(_createEventHandlerMethod(
-      methodName,
-      stmts,
-      localDeclarations,
-    ));
-    return o.ReadClassMemberExpr(methodName);
-  }
-
-  o.ClassMethod _createEventHandlerMethod(String methodName,
-          List<o.Statement> stmts, List<o.Statement> localDeclarations) =>
-      o.ClassMethod(
-          methodName,
-          [_eventParam],
-          [
-            ...localDeclarations,
-            ...maybeCachedCtxDeclarationStatement(statements: stmts),
-            ...stmts,
-          ],
-          null,
-          [o.StmtModifier.Private]);
-
-  final _eventParam = o.FnParam(
-    EventHandlerVars.event.name,
-    o.importType(null),
-  );
 
   /// Create an html node and appends to parent element.
   void createElement(CompileElement parent, NodeReference elementRef,
@@ -794,12 +758,9 @@ class CompileView {
     _initializeAndAppendNode(parent, elementRef, createRenderNodeExpr);
   }
 
-  /// Initializes a component view for [childComponent].
-  ///
-  /// This will allocate a field member for the component view if necessary.
-  ///
-  /// Returns an expression that references the initialized component view.
-  o.Expression _createAppViewNodeAndComponent(
+  /// Adds a field member that holds the reference to a child app view for
+  /// a hosted component.
+  AppViewReference _createAppViewNodeAndComponent(
       CompileElement parent,
       CompileDirectiveMetadata childComponent,
       NodeReference elementRef,
@@ -811,33 +772,25 @@ class CompileView {
             name: 'View${childComponent.type.name}0',
             moduleUrl: templateModuleUrl(childComponent.type));
 
-    // For non-deferred generic components, these type arguments (if any) can
-    // be applied to the field that stores the view. However, for deferred
+    AppViewReference appViewRef = AppViewReference(parent, nodeIndex);
+
+    // For non-deferred generic components, these type arguments (if any) can be
+    // applied to the field that stores the view. However, for deferred
     // components, the field can't be explicitly typed so these type arguments
     // are instead applied to the constructor invocation.
     final componentTypeArguments =
         lookupTypeArgumentsOf(childComponent.type, ast);
 
-    o.ReadClassMemberExpr componentViewExpr;
-    if (viewType == ViewType.host) {
-      // Unlike other view types, host views always have exactly component view,
-      // for which they already have a dedicated field named `componentView`.
-      componentViewExpr = o.ReadClassMemberExpr('componentView');
-    } else {
-      final appViewRef = AppViewReference(parent, nodeIndex);
+    // If the component is deferred, we can't type the field which stores it.
+    final componentViewType = isDeferred
+        ? o.importType(Identifiers.AppView)
+        : o.importType(componentViewIdentifier, componentTypeArguments);
 
-      // If the component is deferred, we can't type the field which stores it.
-      final componentViewType = isDeferred
-          ? o.importType(Views.componentView)
-          : o.importType(componentViewIdentifier, componentTypeArguments);
-
-      // Create the field which stores the component view:
-      //
-      //   ViewSomeComponent0 _compView_0;
-      //
-      appViewRef.allocate(storage, outputType: componentViewType);
-      componentViewExpr = appViewRef.toReadExpr();
-    }
+    // Create the field which stores the component view:
+    //
+    //   ViewSomeComponent0 _compView_0;
+    //
+    appViewRef.allocate(storage, outputType: componentViewType);
 
     // If the component is deferred, its type arguments can't be inferred from
     // the field to which it's assigned.
@@ -851,14 +804,10 @@ class CompileView {
         .importExpr(componentViewIdentifier)
         .instantiate([o.THIS_EXPR, o.literal(nodeIndex)],
             genericTypes: constructorTypeArguments);
-
-    _createMethod.addStmt(o.CommentStmt(
-      'Child component ${childComponent.toPrettyString()}',
-    ));
-
-    _createMethod
-        .addStmt(componentViewExpr.set(createComponentInstanceExpr).toStmt());
-    return componentViewExpr;
+    _createMethod.addStmt(
+        o.WriteClassMemberExpr(appViewRef._name, createComponentInstanceExpr)
+            .toStmt());
+    return appViewRef;
   }
 
   /// Creates a node 'anchor' to mark the insertion point for dynamically
@@ -911,40 +860,36 @@ class CompileView {
     return appViewContainer;
   }
 
-  o.Expression createComponentNodeAndAppend(
+  AppViewReference createComponentNodeAndAppend(
       CompileDirectiveMetadata component,
       CompileElement parent,
       NodeReference elementRef,
       int nodeIndex,
       ElementAst ast,
       {bool isDeferred}) {
-    final componentViewExpr = _createAppViewNodeAndComponent(
+    AppViewReference compAppViewExpr = _createAppViewNodeAndComponent(
         parent, component, elementRef, nodeIndex, isDeferred, ast);
 
-    final root = componentViewExpr.prop(componentViewRootElementFieldName);
+    final root = compAppViewExpr.toReadExpr().prop(appViewRootElementName);
     if (isRootNodeOfHost(nodeIndex)) {
-      // Assign the root element of the component view to a local variable. The
-      // host view will use this as its root node, or the host element of a root
-      // view container.
+      // Assign root element created by viewfactory call to our own root.
       _createMethod.addStmt(elementRef.toWriteStmt(root));
     } else {
       _initializeAndAppendNode(parent, elementRef, root);
     }
-    return componentViewExpr;
+    return compAppViewExpr;
   }
 
-  void createComponentView(
-    o.Expression componentViewExpr,
-    o.Expression componentExpr,
+  void createAppView(
+    AppViewReference appViewRef,
+    o.Expression context,
     o.Expression projectedNodes,
   ) {
+    final appViewExpr = appViewRef.toReadExpr();
     final createExpr =
         projectedNodes is o.LiteralArrayExpr && projectedNodes.entries.isEmpty
-            ? componentViewExpr.callMethod('create', [componentExpr])
-            : componentViewExpr.callMethod('createAndProject', [
-                componentExpr,
-                projectedNodes,
-              ]);
+            ? appViewExpr.callMethod('create0', [context])
+            : appViewExpr.callMethod('create', [context, projectedNodes]);
     _createMethod.addStmt(createExpr.toStmt());
   }
 
@@ -952,7 +897,7 @@ class CompileView {
       nodeIndex == 0 && viewType == ViewType.host;
 
   void projectNodesIntoElement(
-      CompileElement target, int sourceAstIndex, int ngContentIndex) {
+      CompileElement target, int sourceAstIndex, NgContentAst ast) {
     // The projected nodes originate from a different view, so we don't
     // have debug information for them.
     var parentRenderNode = _getParentRenderNode(target);
@@ -965,15 +910,15 @@ class CompileView {
     bool isRootNode = !identical(target.view, this);
     if (!identical(parentRenderNode, o.NULL_EXPR)) {
       _createMethod.addStmt(o.InvokeMemberMethodExpr(
-          'project', [parentRenderNode, o.literal(sourceAstIndex)]).toStmt());
+          'project', [parentRenderNode, o.literal(ast.index)]).toStmt());
     } else if (isRootNode) {
       if (!identical(viewType, ViewType.component)) {
         // store root nodes only for embedded/host views
         rootNodesOrViewContainers.add(nodesExpression);
       }
     } else {
-      if (target.component != null && ngContentIndex != null) {
-        target.addContentNode(ngContentIndex, nodesExpression);
+      if (target.component != null && ast.ngContentIndex != null) {
+        target.addContentNode(ast.ngContentIndex, nodesExpression);
       }
     }
   }
@@ -991,24 +936,35 @@ class CompileView {
     }
   }
 
-  NodeReference createSubscription({bool isMockLike = false}) {
-    final subscription =
-        NodeReference._subscription('subscription_${subscriptions.length}');
-    subscriptions.add(subscription.toReadExpr());
+  void createSubscription(o.Expression streamReference, o.Expression handler,
+      {bool isMockLike = false}) {
+    final subscription = o.variable('subscription_${subscriptions.length}');
+    subscriptions.add(subscription);
+    _createMethod.addStmt(subscription
+        .set(streamReference.callMethod(
+            o.BuiltinMethod.SubscribeObservable, [handler],
+            checked: isMockLike))
+        .toDeclStmt(null, [o.StmtModifier.Final]));
     if (isMockLike) {
       subscribesToMockLike = true;
     }
-    return subscription;
   }
 
-  void addEventListener(
-    NodeReference node,
-    ir.Binding binding,
-    o.Expression handler, [
-    o.Expression directiveInstance,
-  ]) {
-    _createMethod.addStmt(bindingToUpdateStatement(
-        binding, directiveInstance, node, false, handler));
+  void addDomEventListener(
+      NodeReference node, String eventName, o.Expression handler) {
+    var listenExpr = node
+        .toReadExpr()
+        .callMethod('addEventListener', [o.literal(eventName), handler]);
+    _createMethod.addStmt(listenExpr.toStmt());
+  }
+
+  void addCustomEventListener(
+      NodeReference node, String eventName, o.Expression handler) {
+    final appViewUtilsExpr = o.importExpr(Identifiers.appViewUtils);
+    final eventManagerExpr = appViewUtilsExpr.prop('eventManager');
+    var listenExpr = eventManagerExpr.callMethod(
+        'addEventListener', [node.toReadExpr(), o.literal(eventName), handler]);
+    _createMethod.addStmt(listenExpr.toStmt());
   }
 
   void updateQueryAtStartup(CompileQuery query) {
@@ -1095,7 +1051,13 @@ class CompileView {
 
     List<o.Expression> changeDetectorParams;
     if (providerHasChangeDetector) {
+      // ignore: list_element_type_not_assignable
       changeDetectorParams = [resolvedProviderValueExpr];
+      if (directiveMetadata.changeDetection ==
+          ChangeDetectionStrategy.Stateful) {
+        changeDetectorParams.add(o.THIS_EXPR);
+        changeDetectorParams.add(compileElement.renderNode.toReadExpr());
+      }
     }
 
     if (isEager) {
@@ -1117,24 +1079,11 @@ class CompileView {
               o.ReadClassMemberExpr(propName, changeDetectorType), 'instance',
               outputType: forceDynamic ? o.DYNAMIC_TYPE : type);
         } else {
-          if (viewType == ViewType.host &&
-              provider.providerType == ProviderAstType.Component) {
-            // Host views always have a exactly one component instance, so when
-            // the provider type is a component, it must be this instance.
-            // There's no need to allocate a new field for this provider, as
-            // `HostView` already has a dedicated field for it.
-            propName = hostViewComponentFieldName;
-            _createMethod.addStmt(o.ReadClassMemberExpr(propName)
-                .set(resolvedProviderValueExpr)
-                .toStmt());
-          } else {
-            ViewStorageItem item = storage.allocate(propName,
-                outputType: forceDynamic ? o.DYNAMIC_TYPE : type,
-                modifiers: const [o.StmtModifier.Private]);
-            _createMethod.addStmt(storage
-                .buildWriteExpr(item, resolvedProviderValueExpr)
-                .toStmt());
-          }
+          ViewStorageItem item = storage.allocate(propName,
+              outputType: forceDynamic ? o.DYNAMIC_TYPE : type,
+              modifiers: const [o.StmtModifier.Private]);
+          _createMethod.addStmt(
+              storage.buildWriteExpr(item, resolvedProviderValueExpr).toStmt());
         }
       } else {
         // Since provider is not dynamically reachable and we only need
@@ -1280,7 +1229,7 @@ class CompileView {
     final cancelHandlerName = '_cancelDeferredLoad${targetElement.nodeIndex}';
     storage.allocate(
       cancelHandlerName,
-      outputType: o.FunctionType(o.VOID_TYPE, []),
+      outputType: new o.FunctionType(o.VOID_TYPE, []),
     );
     _createMethod.addStmt(
       o.ReadClassMemberExpr(cancelHandlerName).set(deferredLoadExpr).toStmt(),
@@ -1294,20 +1243,6 @@ class CompileView {
     targetStatements.addAll(_createMethod.finish());
   }
 
-  List<o.Statement> writeCheckAlwaysChangeDetectionStatements() {
-    final methodName = 'detectChangesInCheckAlwaysViews';
-    return [
-      // `HostView` already has a specialized implementation of this method.
-      if (viewType != ViewType.host) ...[
-        for (final viewContainer in viewContainers)
-          viewContainer.callMethod(methodName, []).toStmt(),
-        for (final viewChild in viewChildren)
-          if (viewChild.component.isChangeDetectionLink)
-            viewChild.componentView.callMethod(methodName, []).toStmt(),
-      ],
-    ];
-  }
-
   List<o.Statement> writeChangeDetectionStatements() {
     var statements = <o.Statement>[];
     if (detectChangesInInputsMethod.isEmpty &&
@@ -1316,11 +1251,7 @@ class CompileView {
         detectChangesRenderPropertiesMethod.isEmpty &&
         _updateViewQueriesMethod.isEmpty &&
         afterViewLifecycleCallbacksMethod.isEmpty &&
-        // Host views have a default implementation of `detectChangesInternal()`
-        // that change detects their only child component view, so the presence
-        // of child views is only an indicator for generating change detection
-        // statements for component and embedded views.
-        (viewType == ViewType.host || viewChildren.isEmpty) &&
+        viewChildren.isEmpty &&
         viewContainers.isEmpty) {
       return statements;
     }
@@ -1353,9 +1284,8 @@ class CompileView {
     statements.addAll(detectChangesRenderPropertiesMethod.finish());
 
     // Add view child change detection calls.
-    for (var viewChild in viewChildren) {
-      statements.add(
-          viewChild.componentView.callMethod('detectChanges', []).toStmt());
+    for (o.Expression viewChild in viewChildren) {
+      statements.add(viewChild.callMethod('detectChanges', []).toStmt());
     }
 
     List<o.Statement> afterViewStmts =
@@ -1375,9 +1305,18 @@ class CompileView {
           .set(o.literal(false))
           .toDeclStmt(o.BOOL_TYPE));
     }
+    if (readVars.contains(DetectChangesVars.changes.name) ||
+        requiresOnChangesCall) {
+      varStmts.add(o.DeclareVarStmt(DetectChangesVars.changes.name, null,
+          o.MapType(o.importType(Identifiers.SimpleChange))));
+    }
     if (readVars.contains(DetectChangesVars.firstCheck.name)) {
-      varStmts.add(o.DeclareVarStmt(DetectChangesVars.firstCheck.name,
-          o.THIS_EXPR.prop('firstCheck'), o.BOOL_TYPE));
+      varStmts.add(o.DeclareVarStmt(
+          DetectChangesVars.firstCheck.name,
+          o.THIS_EXPR
+              .prop('cdState')
+              .equals(o.literal(ChangeDetectorState.NeverChecked)),
+          o.BOOL_TYPE));
     }
     if (genConfig.profileFor == Profile.build) {
       genProfileCdEnd(this, statements);
@@ -1537,15 +1476,11 @@ class CompileViewStorage implements ViewStorage {
 
   @override
   o.Expression buildWriteExpr(ViewStorageItem item, o.Expression value) {
-    return item.isStatic
-        ? o.WriteStaticMemberExpr(item.name, value)
-        : o.WriteClassMemberExpr(item.name, value);
+    return o.WriteClassMemberExpr(item.name, value);
   }
 
   @override
   o.Expression buildReadExpr(ViewStorageItem item) {
-    return item.isStatic
-        ? o.ReadStaticMemberExpr(item.name, type: item.outputType)
-        : o.ReadClassMemberExpr(item.name, item.outputType);
+    return o.ReadClassMemberExpr(item.name, item.outputType);
   }
 }

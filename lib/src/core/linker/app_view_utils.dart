@@ -2,10 +2,14 @@ import 'dart:html' show DocumentFragment, NodeTreeSanitizer;
 
 import 'package:angular/di.dart' show Injectable;
 import 'package:angular/src/core/application_tokens.dart' show APP_ID;
-import 'package:angular/src/core/linker/template_ref.dart';
-import 'package:angular/src/core/linker/view_container.dart';
+import 'package:angular/src/core/change_detection/change_detection.dart'
+    show devModeEqual;
 import 'package:angular/src/core/security.dart';
+import 'package:angular/src/runtime.dart';
 import 'package:angular/src/runtime/dom_events.dart' show EventManager;
+import 'package:meta/dart2js.dart' as dart2js;
+
+import 'exceptions.dart' show ExpressionChangedAfterItHasBeenCheckedException;
 
 /// Application wide view utilities.
 AppViewUtils appViewUtils;
@@ -18,11 +22,34 @@ class AppViewUtils {
   final EventManager eventManager;
   final SanitizationService sanitizer;
 
-  const AppViewUtils(
-    @APP_ID this.appId,
-    this.sanitizer,
-    this.eventManager,
-  );
+  /// Whether change detection should throw an exception when a change is
+  /// detected.
+  ///
+  /// Latency sensitive! Used by checkBinding during change detection.
+  static bool get throwOnChanges => isDevMode && _throwOnChanges;
+  static bool _throwOnChanges = false;
+  static int _throwOnChangesCounter = 0;
+
+  AppViewUtils(@APP_ID this.appId, this.sanitizer, this.eventManager);
+
+  /// Enters execution mode that will throw exceptions if any binding
+  /// has been updated since last change detection cycle.
+  ///
+  /// Used by Developer mode and Test beds to validate that bindings are
+  /// stable.
+  static void enterThrowOnChanges() {
+    _throwOnChangesCounter++;
+    _throwOnChanges = true;
+  }
+
+  /// Exits change detection check mode.
+  ///
+  /// Used by Developer mode and Test beds to validate that bindings are
+  /// stable.
+  static void exitThrowOnChanges() {
+    _throwOnChangesCounter--;
+    _throwOnChanges = _throwOnChangesCounter != 0;
+  }
 }
 
 /// Creates a document fragment from [trustedHtml].
@@ -33,23 +60,32 @@ DocumentFragment createTrustedHtml(String trustedHtml) {
   );
 }
 
-/// Loads Dart code used in [templateRef] lazily.
+/// Returns whether [newValue] has changed since being [oldValue].
 ///
-/// Returns a function, that when executed, cancels the creation of the view.
-void Function() loadDeferred(
-  Future<void> Function() loadComponent,
-  Future<void> Function() loadTemplateLib,
-  ViewContainer viewContainer,
-  TemplateRef templateRef,
-) {
-  var cancelled = false;
-  Future.wait([loadComponent(), loadTemplateLib()]).then((_) {
-    if (!cancelled) {
-      viewContainer.createEmbeddedView(templateRef);
-      viewContainer.detectChangesInNestedViews();
-    }
-  });
-  return () {
-    cancelled = true;
-  };
+/// In _dev-mode_ it throws if a second-pass change-detection is being made to
+/// ensure that values are not changing during change detection (illegal).
+@dart2js.tryInline
+bool checkBinding(oldValue, newValue) =>
+    // This is only ever possibly true when assertions are enabled.
+    //
+    // It's set during the second "make-sure-nothing-changed" pass of tick().
+    AppViewUtils.throwOnChanges
+        ? _checkBindingDebug(oldValue, newValue)
+        : _checkBindingRelease(oldValue, newValue);
+
+@dart2js.noInline
+bool _checkBindingDebug(oldValue, newValue) {
+  if (!devModeEqual(oldValue, newValue)) {
+    throw ExpressionChangedAfterItHasBeenCheckedException(
+      oldValue,
+      newValue,
+      null,
+    );
+  }
+  return false;
+}
+
+@dart2js.tryInline
+bool _checkBindingRelease(oldValue, newValue) {
+  return !identical(oldValue, newValue);
 }
